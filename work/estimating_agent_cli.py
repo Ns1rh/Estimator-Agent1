@@ -26,6 +26,7 @@ from work.estimating_agent.project_scan import project_dirs, scan_project, write
 from work.estimating_agent.project_intake import write_intake_outputs
 from work.estimating_agent.sheet_map import read_sheet_map, write_sheet_map_template
 from work.estimating_agent.symbol_detection import detect_light_fixtures
+from work.estimating_agent.symbol_validation import validate_symbol_detections
 from work.estimating_agent.training_set import build_training_set
 from work.estimating_agent.validation import validate_training_set
 from work.estimating_agent.web_accubid_prep import write_web_accubid_prep
@@ -170,6 +171,14 @@ def main() -> None:
     light_fixture_parser.add_argument("--rendered-sheets-dir", type=Path, required=True)
     light_fixture_parser.add_argument("--out-dir", type=Path, required=True)
     light_fixture_parser.add_argument("--min-confidence", type=float, default=0.55)
+
+    validate_symbols_parser = subparsers.add_parser(
+        "validate-detections",
+        help="Compare Phase 3 symbol detections against a historical LiveCount TPX export.",
+    )
+    validate_symbols_parser.add_argument("--detections", type=Path, required=True)
+    validate_symbols_parser.add_argument("--tpx", type=Path, required=True)
+    validate_symbols_parser.add_argument("--out-dir", type=Path, required=True)
 
     args = parser.parse_args()
 
@@ -341,6 +350,15 @@ def main() -> None:
         print(summary_md)
         print(takeoff_csv)
         print(review_csv)
+
+    if args.command == "validate-detections":
+        details_csv, report_md = validate_symbol_detections(
+            args.detections,
+            args.tpx,
+            args.out_dir,
+        )
+        print(details_csv)
+        print(report_md)
 
 
 if __name__ == "__main__":
