@@ -9,6 +9,7 @@ from reportlab.pdfgen import canvas
 
 from .drawing_intelligence import write_drawing_intelligence_outputs
 from .project_intake import write_intake_outputs
+from .schedule_understanding import write_fixture_schedule_outputs
 from .symbol_detection import detect_light_fixtures
 
 
@@ -33,13 +34,34 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 def _write_empty_takeoff(path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_category", "review_required"])
+        writer.writerow(
+            [
+                "item",
+                "quantity",
+                "sheet",
+                "location",
+                "confidence",
+                "reason",
+                "review_category",
+                "schedule_description",
+                "schedule_confidence",
+                "schedule_source",
+                "review_required",
+            ]
+        )
 
 
 def _write_empty_review(path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["sheet", "item", "quantity", "confidence", "reason", "review_category", "review_required", "review_note"])
+
+
+def _write_csv_rows(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None:
@@ -51,6 +73,7 @@ def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None
                 "sheet",
                 "takeoff_item",
                 "quantity",
+                "fixture_schedule_description",
                 "suggested_accubid_item",
                 "suggested_accubid_assembly",
                 "mapping_status",
@@ -63,6 +86,7 @@ def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None
                     row.get("sheet", ""),
                     row.get("item", ""),
                     row.get("quantity", ""),
+                    row.get("schedule_description", ""),
                     "",
                     "",
                     "needs_estimator_mapping",
@@ -77,6 +101,54 @@ def _tag_from_takeoff_item(item: str) -> str:
     if upper.startswith(marker):
         return item[len(marker):].strip().upper()
     return item.strip().upper()
+
+
+def _enrich_takeoff_with_fixture_schedule(takeoff_items: Path, schedule_entries_csv: Path) -> int:
+    rows = _read_csv(takeoff_items)
+    entries = {
+        (row.get("tag") or "").upper(): row
+        for row in _read_csv(schedule_entries_csv)
+        if row.get("tag")
+    }
+    if not rows:
+        _write_empty_takeoff(takeoff_items)
+        return 0
+
+    preferred_fields = [
+        "item",
+        "quantity",
+        "sheet",
+        "location",
+        "confidence",
+        "reason",
+        "review_category",
+        "schedule_description",
+        "schedule_confidence",
+        "schedule_source",
+        "review_required",
+    ]
+    fieldnames = []
+    for field in [*preferred_fields, *rows[0].keys()]:
+        if field not in fieldnames:
+            fieldnames.append(field)
+
+    matched = 0
+    for row in rows:
+        tag = _tag_from_takeoff_item(row.get("item", ""))
+        entry = entries.get(tag)
+        if entry:
+            row["schedule_description"] = entry.get("schedule_description", "")
+            row["schedule_confidence"] = entry.get("schedule_confidence", "")
+            source_pdf = entry.get("schedule_source_pdf", "")
+            source_page = entry.get("schedule_source_page", "")
+            row["schedule_source"] = f"{source_pdf}#page={source_page}" if source_pdf and source_page else source_pdf
+            matched += 1
+        else:
+            row.setdefault("schedule_description", "")
+            row.setdefault("schedule_confidence", "")
+            row.setdefault("schedule_source", "")
+    _write_csv_rows(takeoff_items, rows, fieldnames)
+    return matched
 
 
 def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -> None:
@@ -281,6 +353,19 @@ def run_estimator_workflow(
     if not marked_up_drawings.exists():
         last_status = steps[-1][1] if steps else "no symbol detection step ran"
         _write_no_markups_pdf(marked_up_drawings, last_status)
+
+    schedule_dir = out_dir / "_internal" / "04_schedule_understanding"
+    schedule_matches = 0
+    try:
+        if takeoff_items.exists() and _read_csv(takeoff_items):
+            schedule_summary, schedule_entries = write_fixture_schedule_outputs(project_folder, takeoff_items, schedule_dir)
+            schedule_matches = _enrich_takeoff_with_fixture_schedule(takeoff_items, schedule_entries)
+            steps.append(("schedule_understanding_light_fixtures", f"done: matched {schedule_matches} takeoff rows to schedule entries", str(schedule_summary)))
+        else:
+            steps.append(("schedule_understanding_light_fixtures", "skipped: no takeoff items", ""))
+    except Exception as exc:
+        steps.append(("schedule_understanding_light_fixtures", f"failed: {exc}", ""))
+
     _write_accubid_mapping_template(takeoff_items, accubid_mapping)
     _write_validation_answer_key_template(takeoff_items, validation_answer_key)
 
@@ -294,6 +379,7 @@ def run_estimator_workflow(
     page_rows = _read_csv(sheet_page_map) if sheet_page_map and sheet_page_map.exists() else []
     takeoff_rows = _read_csv(takeoff_items)
     review_required = sum(1 for row in takeoff_rows if (row.get("review_required") or "").lower() in {"yes", "true", "1"})
+    schedule_matched_rows = sum(1 for row in takeoff_rows if row.get("schedule_description"))
     review_category_counts: dict[str, int] = {}
     for row in takeoff_rows:
         category = row.get("review_category") or "uncategorized"
@@ -325,6 +411,7 @@ def run_estimator_workflow(
         handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
+        handle.write(f"- Takeoff rows matched to fixture schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
         if review_category_counts:
             handle.write("### Candidate quality buckets\n\n")
@@ -357,14 +444,17 @@ def run_estimator_workflow(
                     f"- {row.get('sheet', '')}: {row.get('item', '')} x {row.get('quantity', '')} "
                     f"(confidence {row.get('confidence', '')}, category {row.get('review_category', '')}, review {row.get('review_required', '')})\n"
                 )
+                if row.get("schedule_description"):
+                    handle.write(f"  - Schedule: {row.get('schedule_description', '')[:180]}\n")
             handle.write("\nThese are candidate counts for estimator review, not final bid quantities.\n")
             handle.write("\n")
 
         handle.write("## Estimator next action\n\n")
         if takeoff_rows:
             handle.write("1. Review `takeoff_items.csv` and `marked_up_drawings.pdf`.\n")
-            handle.write("2. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
-            handle.write("3. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
+            handle.write("2. Confirm any fixture schedule descriptions that were automatically attached.\n")
+            handle.write("3. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
+            handle.write("4. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
         else:
             handle.write("This run did not produce symbol detections. Check whether the project folder contains searchable drawing PDFs and whether lighting/electrical plan sheets were selected under `_internal/02_drawing_intelligence/focused_sheet_index.csv`.\n")
         handle.write("\n## How to validate this run\n\n")
