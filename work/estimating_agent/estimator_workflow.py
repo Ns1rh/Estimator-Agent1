@@ -5,6 +5,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from reportlab.pdfgen import canvas
+
 from .drawing_intelligence import write_drawing_intelligence_outputs
 from .project_intake import write_intake_outputs
 from .symbol_detection import detect_light_fixtures
@@ -176,6 +178,17 @@ def _copy_if_exists(source: Path, destination: Path) -> bool:
     return False
 
 
+def _write_no_markups_pdf(path: Path, reason: str) -> None:
+    c = canvas.Canvas(str(path), pagesize=(792, 612))
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(72, 540, "No marked-up drawings generated")
+    c.setFont("Helvetica", 11)
+    c.drawString(72, 510, "The estimator package was created, but no drawing markup PDF was available for this run.")
+    c.drawString(72, 490, f"Reason: {reason[:120]}")
+    c.drawString(72, 460, "Check project_dashboard.md for the next estimator action.")
+    c.save()
+
+
 def run_estimator_workflow(
     project_folder: Path,
     out_dir: Path,
@@ -201,7 +214,8 @@ def run_estimator_workflow(
     accubid_mapping = out_dir / "accubid_mapping.csv"
     marked_up_drawings = out_dir / "marked_up_drawings.pdf"
     validation_answer_key = out_dir / "validation_answer_key_template.csv"
-    run_manifest = out_dir / "workflow_manifest.csv"
+    internal_dir = out_dir / "_internal"
+    run_manifest = internal_dir / "workflow_manifest.csv"
 
     steps: list[tuple[str, str, str]] = []
 
@@ -264,9 +278,13 @@ def run_estimator_workflow(
         _write_empty_takeoff(takeoff_items)
     if not estimator_review.exists():
         _write_empty_review(estimator_review)
+    if not marked_up_drawings.exists():
+        last_status = steps[-1][1] if steps else "no symbol detection step ran"
+        _write_no_markups_pdf(marked_up_drawings, last_status)
     _write_accubid_mapping_template(takeoff_items, accubid_mapping)
     _write_validation_answer_key_template(takeoff_items, validation_answer_key)
 
+    run_manifest.parent.mkdir(parents=True, exist_ok=True)
     with run_manifest.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["workflow_step", "status", "artifact"])

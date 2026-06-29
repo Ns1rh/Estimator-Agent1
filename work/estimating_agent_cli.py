@@ -53,6 +53,7 @@ def main() -> None:
                     "  estimator_review.csv",
                     "  accubid_mapping.csv",
                     "  marked_up_drawings.pdf",
+                    "  validation_answer_key_template.csv",
                     "",
                     "Support/experimental commands still exist for development, but estimate-project is the estimator-facing entrypoint.",
                 ]
