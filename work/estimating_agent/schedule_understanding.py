@@ -131,7 +131,41 @@ def _candidate_schedule_texts(project_folder: Path, max_pages: int = 160) -> lis
 def _clean_description(text: str, limit: int = 260) -> str:
     cleaned = re.sub(r"\s+", " ", text).strip(" -|:,")
     cleaned = re.sub(r"^(TAG|DESCRIPTION|MANUFACTURER/SERIES|MODEL)\b", "", cleaned, flags=re.I).strip(" -|:,")
+    cleaned = _improve_schedule_readability(cleaned)
     return cleaned[:limit].strip()
+
+
+def _improve_schedule_readability(text: str) -> str:
+    """Make PDF-extracted schedule rows easier to review without pretending to fully parse the table."""
+    replacements = {
+        "TROFFERLITHONIA": "TROFFER - LITHONIA",
+        "DOWNLIGHTGOTHAM": "DOWNLIGHT - GOTHAM",
+        "RATEDGOTHAM": "RATED - GOTHAM",
+        "LINEARMARK": "LINEAR - MARK",
+        "MIRRORELECTRIC": "MIRROR - ELECTRIC",
+        "RATEDEVERBRITE": "RATED - EVERBRITE",
+        "ARCHITECTURALS": "ARCHITECTURAL - ",
+        "WHITERECESSED": "WHITE - RECESSED",
+        "WHITESURFACE": "WHITE - SURFACE",
+        "CLEARRECESSED": "CLEAR - RECESSED",
+        "RECESSEDCEILING": "RECESSED - CEILING",
+        "SURFACECEILING": "SURFACE - CEILING",
+        "GRIDMRI": "GRID - MRI",
+        "GRIDMEDS": "GRID - MEDS",
+        "GRIDOFFICES": "GRID - OFFICES",
+        "GRIDGENERAL": "GRID - GENERAL",
+        "GYPSUMGENERAL": "GYPSUM - GENERAL",
+        "GYPSUMMRI": "GYPSUM - MRI",
+        "GYPSUMLOBBY": "GYPSUM - LOBBY",
+        "WALLTOILETS": "WALL - TOILETS",
+        "WALLRESPITE": "WALL - RESPITE",
+    }
+    cleaned = text
+    for before, after in replacements.items():
+        cleaned = re.sub(before, after, cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=[a-z])(?=[A-Z]{2,}(?:\s|$))", " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
 
 
 def _fixture_schedule_section(text: str) -> str:
