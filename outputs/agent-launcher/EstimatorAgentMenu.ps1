@@ -144,14 +144,16 @@ while ($true) {
   Write-Host "   Estimator Coworker Agent"
   Write-Host "======================================="
   Write-Host ""
-  Write-Host "Do real estimating helper work:"
+  Write-Host "Main estimator workflow:"
+  Write-Host "1. Estimate Project - project folder to estimator review package"
+  Write-Host ""
+  Write-Host "Support / experimental tools:"
   Write-Host "0. Website-only Accubid prep package - LiveCount web + Accubid workflow"
-  Write-Host "1. Full Worker Mode - run a project like an estimating coworker"
   Write-Host "2. List item types from drawing or project"
   Write-Host "3. Count a specific item/tag"
-  Write-Host "4. Project Intelligence - classify a project folder"
-  Write-Host "5. Drawing Intelligence - locate sheets and drawing regions"
-  Write-Host "17. Symbol Detection - light fixture candidates"
+  Write-Host "4. Project Intelligence only - classify a project folder"
+  Write-Host "5. Drawing Intelligence only - locate sheets and drawing regions"
+  Write-Host "17. Symbol Detection only - light fixture candidates"
   Write-Host ""
   Write-Host "Improve / validate the agent:"
   Write-Host "6. Scan Bids 2025 project database"
@@ -198,7 +200,7 @@ while ($true) {
     }
     "1" {
       Write-Host ""
-      Write-Host "Full Worker Mode expects a full project folder, not just one random file." -ForegroundColor Cyan
+      Write-Host "Estimate Project expects a full project folder, not just one random file." -ForegroundColor Cyan
       $projectFolder = Normalize-InputPath (Pick-Folder "Choose full project folder")
       if ([string]::IsNullOrWhiteSpace($projectFolder)) {
         $projectFolder = Normalize-InputPath (Read-Host "Or paste full project folder path")
@@ -210,14 +212,16 @@ while ($true) {
         continue
       }
       $projectName = Split-Path $projectFolder -Leaf
-      $safeName = Get-SafeName $projectName 'full_worker_project'
-      $outFolder = Join-Path $coworkerOutRoot "$safeName-full-worker"
-      $ok = Invoke-AgentCommand "running Full Worker Mode on this project" @('full-worker', '--project-folder', $projectFolder, '--out-dir', $outFolder, '--project-name', $projectName) $outFolder
+      $safeName = Get-SafeName $projectName 'estimate_project'
+      $outFolder = Join-Path $coworkerOutRoot "$safeName-estimate-project"
+      $ok = Invoke-AgentCommand "running the primary estimator workflow on this project" @('estimate-project', '--project-folder', $projectFolder, '--out-dir', $outFolder, '--project-name', $projectName) $outFolder
       if ($ok) {
-        Finish-WithReport "Full Worker Mode complete" $outFolder @(
-          (Join-Path $outFolder 'WORKER_DASHBOARD.md'),
-          (Join-Path $outFolder '02_drawing_estimate\estimator_coworker_report.md'),
-          (Join-Path $outFolder '03_livecount_tpx_audit\latest_tpx_agent_review.md')
+        Finish-WithReport "Estimate Project complete" $outFolder @(
+          (Join-Path $outFolder 'project_dashboard.md'),
+          (Join-Path $outFolder 'takeoff_items.csv'),
+          (Join-Path $outFolder 'estimator_review.csv'),
+          (Join-Path $outFolder 'accubid_mapping.csv'),
+          (Join-Path $outFolder 'marked_up_drawings.pdf')
         )
       }
       Pause-Agent

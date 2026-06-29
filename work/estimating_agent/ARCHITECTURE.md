@@ -230,14 +230,22 @@ Do not attempt bid strategy.
 
 Focus only on clean estimating data.
 
-## Immediate next implementation step
+## Current implementation focus
 
-Refactor Phase 1 first.
+The first-class user workflow is now:
 
-Build a clean project intake command that accepts a project folder and produces only:
+```powershell
+estimate-project --project-folder <PROJECT_FOLDER> --out-dir <OUTPUT_FOLDER>
+```
+
+This command should be the normal estimator entrypoint. It may call Phase 1, Phase 2, symbol detection, validation, LiveCount integration, and Accubid integration internally, but those lower-level tools should feel like backstage machinery.
+
+The primary output contract remains:
 
 - `project_dashboard.md`
-- `project_files.csv`
-- `electrical_sheet_index.csv`
+- `takeoff_items.csv`
+- `estimator_review.csv`
+- `accubid_mapping.csv`
+- `marked_up_drawings.pdf`
 
-This should replace the current scattered intake/scan/report behavior as the first normal user workflow.
+Any command that does not directly help this workflow should be treated as support/experimental, not as the product.

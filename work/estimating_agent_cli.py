@@ -21,6 +21,7 @@ from work.estimating_agent.drawing_estimator import (
     write_scan_outputs as write_drawing_scan_outputs,
 )
 from work.estimating_agent.drawing_intelligence import write_drawing_intelligence_outputs
+from work.estimating_agent.estimator_workflow import run_estimator_workflow
 from work.estimating_agent.livecount_tpx import read_tpx
 from work.estimating_agent.project_scan import project_dirs, scan_project, write_scan_outputs
 from work.estimating_agent.project_intake import write_intake_outputs
@@ -37,14 +38,49 @@ from work.estimating_agent.worker_mode import run_full_worker_mode
 
 
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
+        print(
+            "\n".join(
+                [
+                    "Estimator coworker agent",
+                    "",
+                    "Primary workflow:",
+                    "  estimate-project --project-folder <PROJECT_FOLDER> --out-dir <OUTPUT_FOLDER>",
+                    "",
+                    "What it produces:",
+                    "  project_dashboard.md",
+                    "  takeoff_items.csv",
+                    "  estimator_review.csv",
+                    "  accubid_mapping.csv",
+                    "  marked_up_drawings.pdf",
+                    "",
+                    "Support/experimental commands still exist for development, but estimate-project is the estimator-facing entrypoint.",
+                ]
+            )
+        )
+        return
+
     parser = argparse.ArgumentParser(
-        description="Local LiveCount/Accubid estimating assistant bridge."
+        description=(
+            "Estimator coworker agent. Primary command: estimate-project. "
+            "Other commands are lower-level support/experimental tools."
+        )
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar="{estimate-project}")
+
+    estimate_project_parser = subparsers.add_parser(
+        "estimate-project",
+        help="PRIMARY WORKFLOW: run the estimator coworker on a project folder and produce the main output contract.",
+    )
+    estimate_project_parser.add_argument("--project-folder", type=Path, required=True)
+    estimate_project_parser.add_argument("--out-dir", type=Path, required=True)
+    estimate_project_parser.add_argument("--project-name")
+    estimate_project_parser.add_argument("--max-sheets", type=int, default=6)
+    estimate_project_parser.add_argument("--min-confidence", type=float, default=0.55)
 
     audit_parser = subparsers.add_parser(
         "audit-tpx",
-        help="Read a LiveCount TPX export and write a fixture audit report.",
+        help=argparse.SUPPRESS,
     )
     audit_parser.add_argument("--project-name", required=True)
     audit_parser.add_argument("--tpx", type=Path, required=True)
@@ -53,14 +89,14 @@ def main() -> None:
 
     init_parser = subparsers.add_parser(
         "init-project",
-        help="Create a starter estimating-agent project packet folder.",
+        help=argparse.SUPPRESS,
     )
     init_parser.add_argument("--project-name", required=True)
     init_parser.add_argument("--out-dir", type=Path, required=True)
 
     scan_parser = subparsers.add_parser(
         "scan-projects",
-        help="Scan a root folder of project folders and rank database/training candidates.",
+        help=argparse.SUPPRESS,
     )
     scan_parser.add_argument("--root", type=Path, required=True)
     scan_parser.add_argument("--out-dir", type=Path, required=True)
@@ -70,7 +106,7 @@ def main() -> None:
 
     train_parser = subparsers.add_parser(
         "build-training-set",
-        help="Build per-project training packets from a project_scan.csv file.",
+        help=argparse.SUPPRESS,
     )
     train_parser.add_argument("--scan-csv", type=Path, required=True)
     train_parser.add_argument("--out-dir", type=Path, required=True)
@@ -79,21 +115,21 @@ def main() -> None:
 
     validate_parser = subparsers.add_parser(
         "validate-training-set",
-        help="Validate generated packets against direct TPX recounts.",
+        help=argparse.SUPPRESS,
     )
     validate_parser.add_argument("--manifest", type=Path, required=True)
     validate_parser.add_argument("--out-dir", type=Path, required=True)
 
     drawing_parser = subparsers.add_parser(
         "check-drawing-labels",
-        help="Compare LiveCount fixture labels against searchable text in project PDFs.",
+        help=argparse.SUPPRESS,
     )
     drawing_parser.add_argument("--manifest", type=Path, required=True)
     drawing_parser.add_argument("--out-dir", type=Path, required=True)
 
     missing_parser = subparsers.add_parser(
         "investigate-missing-labels",
-        help="Investigate the biggest fixture labels not found in searchable project PDFs.",
+        help=argparse.SUPPRESS,
     )
     missing_parser.add_argument("--manifest", type=Path, required=True)
     missing_parser.add_argument("--details", type=Path, required=True)
@@ -102,21 +138,21 @@ def main() -> None:
 
     unresolved_parser = subparsers.add_parser(
         "summarize-missing-labels",
-        help="Create a fast unresolved-label report from drawing label check details.",
+        help=argparse.SUPPRESS,
     )
     unresolved_parser.add_argument("--details", type=Path, required=True)
     unresolved_parser.add_argument("--out-dir", type=Path, required=True)
 
     intake_parser = subparsers.add_parser(
         "intake-project",
-        help="Create a pre-takeoff project intake packet from drawings/spec PDFs.",
+        help=argparse.SUPPRESS,
     )
     intake_parser.add_argument("--project-folder", type=Path, required=True)
     intake_parser.add_argument("--out-dir", type=Path, required=True)
 
     scan_drawing_parser = subparsers.add_parser(
         "scan-drawing",
-        help="Scan a drawing PDF or project folder and list likely sheets/item types.",
+        help=argparse.SUPPRESS,
     )
     scan_drawing_parser.add_argument("--input", type=Path, required=True)
     scan_drawing_parser.add_argument("--out-dir", type=Path, required=True)
@@ -124,7 +160,7 @@ def main() -> None:
 
     count_item_parser = subparsers.add_parser(
         "count-item",
-        help="Count one item/tag in a drawing PDF or project folder using searchable text.",
+        help=argparse.SUPPRESS,
     )
     count_item_parser.add_argument("--input", type=Path, required=True)
     count_item_parser.add_argument("--item", required=True)
@@ -133,7 +169,7 @@ def main() -> None:
 
     estimate_drawing_parser = subparsers.add_parser(
         "estimate-drawing",
-        help="Create a coworker-style estimate starter packet from a drawing PDF or project folder.",
+        help=argparse.SUPPRESS,
     )
     estimate_drawing_parser.add_argument("--input", type=Path, required=True)
     estimate_drawing_parser.add_argument("--out-dir", type=Path, required=True)
@@ -141,7 +177,7 @@ def main() -> None:
 
     web_accubid_parser = subparsers.add_parser(
         "web-accubid-prep",
-        help="Create a LiveCount-web-only + Accubid prep package from drawings/project files.",
+        help=argparse.SUPPRESS,
     )
     web_accubid_parser.add_argument("--input", type=Path, required=True)
     web_accubid_parser.add_argument("--out-dir", type=Path, required=True)
@@ -151,7 +187,7 @@ def main() -> None:
 
     worker_parser = subparsers.add_parser(
         "full-worker",
-        help="Run the full estimator-coworker workflow on a project folder.",
+        help=argparse.SUPPRESS,
     )
     worker_parser.add_argument("--project-folder", type=Path, required=True)
     worker_parser.add_argument("--out-dir", type=Path, required=True)
@@ -159,7 +195,7 @@ def main() -> None:
 
     drawing_intel_parser = subparsers.add_parser(
         "drawing-intelligence",
-        help="Phase 2: locate sheet pages and identify drawing regions from a Phase 1 sheet index.",
+        help=argparse.SUPPRESS,
     )
     drawing_intel_parser.add_argument("--project-folder", type=Path, required=True)
     drawing_intel_parser.add_argument("--sheet-index", type=Path, required=True)
@@ -169,7 +205,7 @@ def main() -> None:
 
     light_fixture_parser = subparsers.add_parser(
         "detect-light-fixtures",
-        help="Phase 3: detect candidate light fixture symbols from rendered drawing sheets.",
+        help=argparse.SUPPRESS,
     )
     light_fixture_parser.add_argument("--rendered-sheets-dir", type=Path, required=True)
     light_fixture_parser.add_argument("--out-dir", type=Path, required=True)
@@ -177,7 +213,7 @@ def main() -> None:
 
     validate_symbols_parser = subparsers.add_parser(
         "validate-detections",
-        help="Compare Phase 3 symbol detections against a historical LiveCount TPX export.",
+        help=argparse.SUPPRESS,
     )
     validate_symbols_parser.add_argument("--detections", type=Path, required=True)
     validate_symbols_parser.add_argument("--tpx", type=Path, required=True)
@@ -185,13 +221,27 @@ def main() -> None:
 
     validate_counts_parser = subparsers.add_parser(
         "validate-detections-csv",
-        help="Compare Phase 3 symbol detections against a simple sheet/tag/quantity answer-key CSV.",
+        help=argparse.SUPPRESS,
     )
     validate_counts_parser.add_argument("--detections", type=Path, required=True)
     validate_counts_parser.add_argument("--answer-key", type=Path, required=True)
     validate_counts_parser.add_argument("--out-dir", type=Path, required=True)
 
     args = parser.parse_args()
+
+    if args.command == "estimate-project":
+        result = run_estimator_workflow(
+            args.project_folder,
+            args.out_dir,
+            project_name=args.project_name,
+            max_sheets=args.max_sheets,
+            min_confidence=args.min_confidence,
+        )
+        print(result.project_dashboard)
+        print(result.takeoff_items)
+        print(result.estimator_review)
+        print(result.accubid_mapping)
+        print(result.marked_up_drawings)
 
     if args.command == "audit-tpx":
         documents, points = read_tpx(args.tpx)
