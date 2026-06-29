@@ -221,6 +221,7 @@ while ($true) {
           (Join-Path $outFolder 'takeoff_items.csv'),
           (Join-Path $outFolder 'estimator_review.csv'),
           (Join-Path $outFolder 'accubid_mapping.csv'),
+          (Join-Path $outFolder 'validation_answer_key_template.csv'),
           (Join-Path $outFolder 'marked_up_drawings.pdf')
         )
       }

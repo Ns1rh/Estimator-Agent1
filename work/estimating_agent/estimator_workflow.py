@@ -17,6 +17,7 @@ class EstimatorWorkflowResult:
     estimator_review: Path
     accubid_mapping: Path
     marked_up_drawings: Path
+    validation_answer_key: Path
     out_dir: Path
 
 
@@ -68,6 +69,43 @@ def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None
             )
 
 
+def _tag_from_takeoff_item(item: str) -> str:
+    marker = "LIGHT FIXTURE TAG "
+    upper = item.upper()
+    if upper.startswith(marker):
+        return item[len(marker):].strip().upper()
+    return item.strip().upper()
+
+
+def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -> None:
+    rows = _read_csv(takeoff_items)
+    with out_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "sheet",
+                "tag",
+                "ai_quantity",
+                "reviewed_quantity",
+                "review_source",
+                "review_status",
+                "estimator_note",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row.get("sheet", ""),
+                    _tag_from_takeoff_item(row.get("item", "")),
+                    row.get("quantity", ""),
+                    "",
+                    "",
+                    "needs_review",
+                    "",
+                ]
+            )
+
+
 def _copy_if_exists(source: Path, destination: Path) -> bool:
     if source.exists():
         shutil.copy2(source, destination)
@@ -99,6 +137,7 @@ def run_estimator_workflow(
     estimator_review = out_dir / "estimator_review.csv"
     accubid_mapping = out_dir / "accubid_mapping.csv"
     marked_up_drawings = out_dir / "marked_up_drawings.pdf"
+    validation_answer_key = out_dir / "validation_answer_key_template.csv"
     run_manifest = out_dir / "workflow_manifest.csv"
 
     steps: list[tuple[str, str, str]] = []
@@ -156,6 +195,7 @@ def run_estimator_workflow(
     if not estimator_review.exists():
         _write_empty_review(estimator_review)
     _write_accubid_mapping_template(takeoff_items, accubid_mapping)
+    _write_validation_answer_key_template(takeoff_items, validation_answer_key)
 
     with run_manifest.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -169,12 +209,13 @@ def run_estimator_workflow(
 
     with project_dashboard.open("w", encoding="utf-8") as handle:
         handle.write(f"# Estimator coworker dashboard - {project_name}\n\n")
-        handle.write("This is the main estimator-agent workflow output. It is intentionally small: use this dashboard plus the four estimator files below.\n\n")
+        handle.write("This is the main estimator-agent workflow output. It is intentionally small: use this dashboard plus the estimator files below.\n\n")
         handle.write("## Primary outputs\n\n")
         handle.write(f"- `takeoff_items.csv` - detected/countable items for estimator review\n")
         handle.write(f"- `estimator_review.csv` - item-level evidence and review flags\n")
         handle.write(f"- `accubid_mapping.csv` - placeholder mapping from takeoff items to Accubid items/assemblies\n")
         handle.write(f"- `marked_up_drawings.pdf` - visual markup when rendered sheets were available\n")
+        handle.write(f"- `validation_answer_key_template.csv` - fill/export reviewed quantities here to score the agent\n")
         handle.write(f"- `project_dashboard.md` - this dashboard\n\n")
 
         handle.write("## Current run status\n\n")
@@ -211,9 +252,16 @@ def run_estimator_workflow(
 
         handle.write("## Estimator next action\n\n")
         if takeoff_rows:
-            handle.write("Review `takeoff_items.csv` and `marked_up_drawings.pdf`, then fill `accubid_mapping.csv` for the items that should become Accubid items/assemblies.\n")
+            handle.write("1. Review `takeoff_items.csv` and `marked_up_drawings.pdf`.\n")
+            handle.write("2. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
+            handle.write("3. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
         else:
             handle.write("Review the sheet index and drawing intelligence outputs under `_internal/`; this run did not produce symbol detections yet.\n")
+        handle.write("\n## How to validate this run\n\n")
+        handle.write("After reviewed quantities are entered in `validation_answer_key_template.csv`, run:\n\n")
+        handle.write("```powershell\n")
+        handle.write("python work\\estimating_agent_cli.py validate-detections-csv --detections takeoff_items.csv --answer-key validation_answer_key_template.csv --out-dir validation\n")
+        handle.write("```\n")
         handle.write("\n## Product direction note\n\n")
         handle.write("Lower-level scan, audit, and validation commands are support tools. The primary estimator-facing workflow is this `estimate-project` run.\n")
 
@@ -223,5 +271,6 @@ def run_estimator_workflow(
         estimator_review=estimator_review,
         accubid_mapping=accubid_mapping,
         marked_up_drawings=marked_up_drawings,
+        validation_answer_key=validation_answer_key,
         out_dir=out_dir,
     )

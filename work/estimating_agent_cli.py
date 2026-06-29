@@ -242,6 +242,7 @@ def main() -> None:
         print(result.estimator_review)
         print(result.accubid_mapping)
         print(result.marked_up_drawings)
+        print(result.validation_answer_key)
 
     if args.command == "audit-tpx":
         documents, points = read_tpx(args.tpx)
