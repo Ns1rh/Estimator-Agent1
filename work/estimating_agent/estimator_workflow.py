@@ -347,6 +347,7 @@ def run_estimator_workflow(
                     f"- {row.get('sheet', '')}: {row.get('item', '')} x {row.get('quantity', '')} "
                     f"(confidence {row.get('confidence', '')}, review {row.get('review_required', '')})\n"
                 )
+            handle.write("\nThese are candidate counts for estimator review, not final bid quantities.\n")
             handle.write("\n")
 
         handle.write("## Estimator next action\n\n")

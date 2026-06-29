@@ -54,18 +54,37 @@ def _one_page_pdf_for_image(image_path: Path) -> Path | None:
 
 def _dedupe_label_candidates(candidates: list[FixtureCandidate], distance: float = 6.0) -> list[FixtureCandidate]:
     kept: list[FixtureCandidate] = []
-    for cand in sorted(candidates, key=lambda c: (c.sheet_number, c.y, c.x, -c.confidence)):
+    for cand in sorted(candidates, key=lambda c: (c.sheet_number, c.y, c.x, -len(c.symbol_type), -c.confidence)):
         duplicate = False
         cand_item = cand.symbol_type
-        for old in kept:
-            if old.source_image != cand.source_image or old.symbol_type != cand_item:
+        replacement_index: int | None = None
+        for index, old in enumerate(kept):
+            if old.source_image != cand.source_image:
                 continue
-            if math.hypot(cand.cx - old.cx, cand.cy - old.cy) <= distance:
+            same_item_nearby = old.symbol_type == cand_item and math.hypot(cand.cx - old.cx, cand.cy - old.cy) <= distance
+            overlapping_text = _overlap_ratio(cand, old) >= 0.55
+            if same_item_nearby or overlapping_text:
                 duplicate = True
+                if len(cand.symbol_type) > len(old.symbol_type):
+                    replacement_index = index
                 break
         if not duplicate:
             kept.append(cand)
+        elif replacement_index is not None:
+            kept[replacement_index] = cand
     return kept
+
+
+def _overlap_ratio(a: FixtureCandidate, b: FixtureCandidate) -> float:
+    left = max(a.x, b.x)
+    top = max(a.y, b.y)
+    right = min(a.x + a.width, b.x + b.width)
+    bottom = min(a.y + a.height, b.y + b.height)
+    if right <= left or bottom <= top:
+        return 0.0
+    overlap = (right - left) * (bottom - top)
+    smaller = min(a.width * a.height, b.width * b.height)
+    return overlap / max(1, smaller)
 
 
 def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandidate]:
@@ -128,7 +147,7 @@ def _plan_crop_bounds(width: int, height: int) -> tuple[int, int, int, int]:
     left = int(width * 0.02)
     top = int(height * 0.18)
     right = int(width * 0.84)
-    bottom = int(height * 0.94)
+    bottom = int(height * 0.90)
     return left, top, right, bottom
 
 
