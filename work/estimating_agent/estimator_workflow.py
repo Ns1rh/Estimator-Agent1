@@ -33,13 +33,13 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 def _write_empty_takeoff(path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_required"])
+        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_category", "review_required"])
 
 
 def _write_empty_review(path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sheet", "item", "quantity", "confidence", "reason", "review_required", "review_note"])
+        writer.writerow(["sheet", "item", "quantity", "confidence", "reason", "review_category", "review_required", "review_note"])
 
 
 def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None:
@@ -294,6 +294,10 @@ def run_estimator_workflow(
     page_rows = _read_csv(sheet_page_map) if sheet_page_map and sheet_page_map.exists() else []
     takeoff_rows = _read_csv(takeoff_items)
     review_required = sum(1 for row in takeoff_rows if (row.get("review_required") or "").lower() in {"yes", "true", "1"})
+    review_category_counts: dict[str, int] = {}
+    for row in takeoff_rows:
+        category = row.get("review_category") or "uncategorized"
+        review_category_counts[category] = review_category_counts.get(category, 0) + 1
     selected_sheet_rows = selected_sheet_rows if "selected_sheet_rows" in locals() else []
 
     with project_dashboard.open("w", encoding="utf-8") as handle:
@@ -322,6 +326,12 @@ def run_estimator_workflow(
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
+        if review_category_counts:
+            handle.write("### Candidate quality buckets\n\n")
+            handle.write("These buckets help the estimator decide what to trust first. They do not make quantities final.\n\n")
+            for category, count in sorted(review_category_counts.items()):
+                handle.write(f"- {category}: {count} takeoff rows\n")
+            handle.write("\n")
 
         if selected_sheet_rows:
             handle.write("### Sheets used for this run\n\n")
@@ -345,7 +355,7 @@ def run_estimator_workflow(
             for row in takeoff_rows[:15]:
                 handle.write(
                     f"- {row.get('sheet', '')}: {row.get('item', '')} x {row.get('quantity', '')} "
-                    f"(confidence {row.get('confidence', '')}, review {row.get('review_required', '')})\n"
+                    f"(confidence {row.get('confidence', '')}, category {row.get('review_category', '')}, review {row.get('review_required', '')})\n"
                 )
             handle.write("\nThese are candidate counts for estimator review, not final bid quantities.\n")
             handle.write("\n")

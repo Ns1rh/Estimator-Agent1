@@ -25,6 +25,7 @@ class FixtureCandidate:
     symbol_type: str
     confidence: float
     reason: str
+    review_category: str
 
     @property
     def cx(self) -> float:
@@ -42,6 +43,18 @@ def _sheet_from_image_name(path: Path) -> str:
 
 FIXTURE_LABEL = re.compile(r"^(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|X\d+[A-Z]?)(?:[a-z])?$")
 LABEL_NOISE = {"OS", "VS", "J", "A", "B", "C", "D", "E", "N", "S", "T"}
+
+
+def _review_category_for_label(label: str) -> str:
+    """Separate strong fixture labels from tags that should stay visible but not trusted blindly."""
+    upper = label.upper()
+    if upper == "EXIT" or upper.startswith("EM") or upper == "EMS":
+        return "likely_fixture_tag"
+    if re.match(r"^[A-Z]\d{1,2}[A-Z]?$", upper):
+        return "likely_fixture_tag"
+    if re.match(r"^X\d+[A-Z]?$", upper):
+        return "possible_fixture_tag"
+    return "possible_fixture_tag"
 
 
 def _one_page_pdf_for_image(image_path: Path) -> Path | None:
@@ -127,6 +140,7 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
                     symbol_type=f"fixture_label_{clean}",
                     confidence=0.86,
                     reason="embedded PDF text label positioned on lighting plan",
+                    review_category=_review_category_for_label(clean),
                 )
             )
 
@@ -278,6 +292,7 @@ def _component_candidates(mask: np.ndarray, crop_offset: tuple[int, int], source
                 symbol_type=symbol_type,
                 confidence=round(confidence, 2),
                 reason=f"connected-component fixture candidate; aspect={aspect:.2f}; fill={fill:.2f}; border={border_ratio:.2f}",
+                review_category="visual_candidate",
             )
         )
 
@@ -335,7 +350,12 @@ def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path) -> l
         image = Image.open(image_path).convert("RGB")
         draw = ImageDraw.Draw(image)
         for idx, cand in enumerate(items, 1):
-            color = (255, 0, 0) if cand.confidence >= 0.7 else (255, 165, 0)
+            if cand.review_category == "likely_fixture_tag":
+                color = (255, 0, 0)
+            elif cand.review_category == "possible_fixture_tag":
+                color = (255, 165, 0)
+            else:
+                color = (255, 200, 0) if cand.confidence >= 0.7 else (255, 165, 0)
             draw.rectangle([cand.x, cand.y, cand.x + cand.width, cand.y + cand.height], outline=color, width=3)
             if idx <= 200:
                 draw.text((cand.x, max(0, cand.y - 12)), str(idx), fill=color)
@@ -375,17 +395,25 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
     review_csv = out_dir / "estimator_review.csv"
     summary_md = out_dir / "light_fixture_detection.md"
 
-    counts = Counter((cand.sheet_number, cand.symbol_type) for cand in candidates)
+    counts = Counter((cand.sheet_number, cand.symbol_type, cand.review_category) for cand in candidates)
+    category_counts = Counter(cand.review_category for cand in candidates)
 
     with takeoff_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_required"])
-        for (sheet, symbol_type), qty in sorted(counts.items()):
-            sheet_candidates = [c for c in candidates if c.sheet_number == sheet and c.symbol_type == symbol_type]
+        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_category", "review_required"])
+        for (sheet, symbol_type, review_category), qty in sorted(counts.items()):
+            sheet_candidates = [
+                c
+                for c in candidates
+                if c.sheet_number == sheet and c.symbol_type == symbol_type and c.review_category == review_category
+            ]
             avg_conf = sum(c.confidence for c in sheet_candidates) / max(1, len(sheet_candidates))
             if symbol_type.startswith("fixture_label_"):
                 item_name = f"LIGHT FIXTURE TAG {symbol_type.removeprefix('fixture_label_')}"
-                reason = "embedded PDF fixture label candidates positioned on lighting plan"
+                if review_category == "likely_fixture_tag":
+                    reason = "embedded PDF fixture label positioned on lighting plan"
+                else:
+                    reason = "embedded PDF fixture-like label; estimator should confirm it is a fixture schedule tag"
             else:
                 item_name = f"LIGHT FIXTURE CANDIDATE - {symbol_type}"
                 reason = "visual rectangular/linear fixture candidates"
@@ -397,13 +425,14 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
                     "rendered drawing coordinates",
                     round(avg_conf, 2),
                     reason,
+                    review_category,
                     "yes",
                 ]
             )
 
     with review_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sheet", "symbol_type", "x", "y", "width", "height", "confidence", "reason", "source_image"])
+        writer.writerow(["sheet", "symbol_type", "x", "y", "width", "height", "confidence", "reason", "review_category", "source_image"])
         for cand in candidates:
             writer.writerow(
                 [
@@ -415,6 +444,7 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
                     cand.height,
                     cand.confidence,
                     cand.reason,
+                    cand.review_category,
                     str(cand.source_image),
                 ]
             )
@@ -427,9 +457,16 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
         handle.write(f"- Rendered sheet images scanned: {len(images)}\n")
         handle.write(f"- Candidate fixture labels/symbols found: {len(candidates)}\n")
         handle.write(f"- Marked image previews: {len(marked_images)}\n\n")
+        handle.write("## Candidate quality buckets\n\n")
+        if category_counts:
+            for category, qty in sorted(category_counts.items()):
+                handle.write(f"- {category}: {qty}\n")
+        else:
+            handle.write("- No candidate quality buckets found.\n")
+        handle.write("\n")
         handle.write("## Counts by sheet/type\n\n")
-        for (sheet, symbol_type), qty in sorted(counts.items()):
-            handle.write(f"- {sheet} / {symbol_type}: {qty}\n")
+        for (sheet, symbol_type, review_category), qty in sorted(counts.items()):
+            handle.write(f"- {sheet} / {symbol_type} / {review_category}: {qty}\n")
         if not counts:
             handle.write("- No fixture candidates found.\n")
         handle.write("\n## Outputs\n\n")
