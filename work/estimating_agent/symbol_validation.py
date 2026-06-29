@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 from .livecount_tpx import TpxDocument, TpxPoint, read_tpx
@@ -104,73 +104,111 @@ def _by_tag(counts: Counter[tuple[str, str]]) -> Counter[str]:
     return totals
 
 
-def validate_symbol_detections(detections_csv: Path, tpx: Path, out_dir: Path) -> tuple[Path, Path]:
-    """Compare AI detections to a historical LiveCount TPX export.
+def _first_present(row: dict[str, str], names: list[str]) -> str:
+    lowered = {key.strip().lower(): value for key, value in row.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value is not None and value.strip():
+            return value
+    return ""
 
-    This validator is intentionally conservative. If the TPX does not appear to
-    contain comparable lighting/fixture takeoff data, it reports that instead of
-    manufacturing an accuracy score from unrelated feeders, panels, or markup.
+
+def _answer_key_counts(path: Path) -> Counter[tuple[str, str]]:
+    """Read a simple estimator answer-key CSV.
+
+    Accepted columns are intentionally flexible:
+    - sheet / drawing / sheet_number
+    - tag / item / fixture / fixture_type / symbol / description
+    - quantity / qty / count
+
+    This lets the user export from LiveCount/Accubid or hand-enter a small
+    reviewed count table without matching an exact internal schema.
     """
 
+    counts: Counter[tuple[str, str]] = Counter()
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            sheet = _normalize_sheet(
+                _first_present(row, ["sheet", "drawing", "sheet_number", "drawing_number"])
+            )
+            tag = _normalize_tag(
+                _first_present(row, ["tag", "item", "fixture", "fixture_type", "symbol", "description"])
+            )
+            qty_text = _first_present(row, ["quantity", "qty", "count"])
+            try:
+                qty = int(float(qty_text or "1"))
+            except ValueError:
+                qty = 1
+            if sheet and tag:
+                counts[(sheet, tag)] += qty
+    return counts
+
+
+def _write_comparison(
+    detections_csv: Path,
+    answer_key_path: Path,
+    answer_key_label: str,
+    detection_sheet_tag: Counter[tuple[str, str]],
+    answer_sheet_tag: Counter[tuple[str, str]],
+    out_dir: Path,
+    extra_sections: list[tuple[str, list[str]]] | None = None,
+) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     details_csv = out_dir / "symbol_detection_validation.csv"
     report_md = out_dir / "SYMBOL_DETECTION_VALIDATION.md"
 
-    detection_sheet_tag = _detection_counts(detections_csv)
-    documents, points = read_tpx(tpx)
-    tpx_sheet_tag = _tpx_lighting_counts(documents, points)
-
-    detection_tag = _by_tag(detection_sheet_tag)
-    tpx_tag = _by_tag(tpx_sheet_tag)
-    all_tags = sorted(set(detection_tag) | set(tpx_tag))
-
+    all_items = sorted(set(detection_sheet_tag) | set(answer_sheet_tag))
     with details_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
+                "sheet",
                 "tag",
                 "ai_detected_qty",
-                "historical_tpx_qty",
+                "answer_key_qty",
                 "delta",
                 "status",
             ]
         )
-        for tag in all_tags:
-            ai_qty = detection_tag[tag]
-            historical_qty = tpx_tag[tag]
-            delta = ai_qty - historical_qty
-            if ai_qty and historical_qty and delta == 0:
+        for sheet, tag in all_items:
+            ai_qty = detection_sheet_tag[(sheet, tag)]
+            answer_qty = answer_sheet_tag[(sheet, tag)]
+            delta = ai_qty - answer_qty
+            if ai_qty and answer_qty and delta == 0:
                 status = "match"
-            elif ai_qty and historical_qty:
+            elif ai_qty and answer_qty:
                 status = "quantity_differs"
             elif ai_qty:
                 status = "ai_only"
             else:
-                status = "historical_only"
-            writer.writerow([tag, ai_qty, historical_qty, delta, status])
+                status = "answer_key_only"
+            writer.writerow([sheet, tag, ai_qty, answer_qty, delta, status])
 
+    detection_tag = _by_tag(detection_sheet_tag)
+    answer_tag = _by_tag(answer_sheet_tag)
+    all_tags = sorted(set(detection_tag) | set(answer_tag))
     total_ai = sum(detection_tag.values())
-    total_historical = sum(tpx_tag.values())
-    comparable = total_historical >= max(5, int(total_ai * 0.05))
-    total_abs_error = sum(abs(detection_tag[tag] - tpx_tag[tag]) for tag in all_tags)
-    matched_tags = sum(1 for tag in all_tags if detection_tag[tag] and detection_tag[tag] == tpx_tag[tag])
-
-    tpx_layer_counts: Counter[str] = Counter(point.layer or "(blank)" for point in points)
-    tpx_desc_samples = Counter(point.description for point in points).most_common(12)
+    total_answer = sum(answer_tag.values())
+    comparable = total_answer >= max(5, int(total_ai * 0.05))
+    total_abs_error = sum(abs(detection_sheet_tag[item] - answer_sheet_tag[item]) for item in all_items)
+    matched_items = sum(1 for item in all_items if detection_sheet_tag[item] and detection_sheet_tag[item] == answer_sheet_tag[item])
+    differing_items = sum(1 for item in all_items if detection_sheet_tag[item] != answer_sheet_tag[item])
 
     with report_md.open("w", encoding="utf-8") as handle:
         handle.write("# Symbol detection validation\n\n")
-        handle.write("This compares the AI Phase 3 detection output to a historical LiveCount TPX export.\n\n")
+        handle.write("This compares the AI Phase 3 detection output to an estimator/native-takeoff answer key.\n\n")
         handle.write("## Inputs\n\n")
         handle.write(f"- AI detections: `{detections_csv}`\n")
-        handle.write(f"- Historical TPX: `{tpx}`\n\n")
+        handle.write(f"- Answer key ({answer_key_label}): `{answer_key_path}`\n\n")
         handle.write("## Result\n\n")
         handle.write(f"- AI detected lighting/fixture quantity: {total_ai}\n")
-        handle.write(f"- Comparable historical lighting/fixture quantity found in TPX: {total_historical}\n")
-        handle.write(f"- Tags compared: {len(all_tags)}\n")
-        handle.write(f"- Exact tag quantity matches: {matched_tags}\n")
+        handle.write(f"- Answer-key quantity: {total_answer}\n")
+        handle.write(f"- Sheet/tag rows compared: {len(all_items)}\n")
+        handle.write(f"- Exact sheet/tag quantity matches: {matched_items}\n")
+        handle.write(f"- Sheet/tag rows needing review: {differing_items}\n")
         if comparable:
-            denominator = max(1, total_historical)
+            denominator = max(1, total_answer)
             score = max(0.0, 1 - (total_abs_error / denominator))
             handle.write(f"- Conservative tag-count score: {score:.2%}\n")
         else:
@@ -180,22 +218,79 @@ def validate_symbol_detections(detections_csv: Path, tpx: Path, out_dir: Path) -
         if not comparable:
             handle.write("## Important finding\n\n")
             handle.write(
-                "This TPX does not appear to contain comparable lighting fixture takeoff data. "
-                "It mostly contains other takeoff layers/descriptions, so it cannot be used as "
-                "the answer key for Phase 3 light-fixture accuracy.\n\n"
+                "The answer key does not contain enough comparable lighting fixture data for a meaningful accuracy score. "
+                "Use a lighting/fixture-specific LiveCount export, Accubid count report, or human-reviewed sheet count.\n\n"
             )
-            handle.write("That is not a detector failure. It means we need either the correct LiveCount lighting export, ")
-            handle.write("a matching Accubid/LiveCount count report, or a human-reviewed sheet count for these rendered sheets.\n\n")
 
-        handle.write("## TPX contents observed\n\n")
-        handle.write("Layer counts:\n\n")
-        for layer, qty in tpx_layer_counts.most_common():
-            handle.write(f"- {layer}: {qty}\n")
-        handle.write("\nCommon TPX descriptions:\n\n")
-        for desc, qty in tpx_desc_samples:
-            handle.write(f"- {qty} x {desc}\n")
+        handle.write("## Biggest differences\n\n")
+        differences = sorted(
+            (
+                (sheet, tag, detection_sheet_tag[(sheet, tag)], answer_sheet_tag[(sheet, tag)], detection_sheet_tag[(sheet, tag)] - answer_sheet_tag[(sheet, tag)])
+                for sheet, tag in all_items
+            ),
+            key=lambda item: abs(item[4]),
+            reverse=True,
+        )
+        for sheet, tag, ai_qty, answer_qty, delta in differences[:20]:
+            if delta == 0:
+                continue
+            handle.write(f"- {sheet} / {tag}: AI {ai_qty}, answer key {answer_qty}, delta {delta:+}\n")
+        if not any(delta for _sheet, _tag, _ai, _answer, delta in differences):
+            handle.write("- No differences found.\n")
+
+        if extra_sections:
+            for title, lines in extra_sections:
+                handle.write(f"\n## {title}\n\n")
+                for line in lines:
+                    handle.write(f"{line}\n")
 
         handle.write("\n## Output\n\n")
         handle.write(f"- Detail comparison CSV: `{details_csv.name}`\n")
 
     return details_csv, report_md
+
+
+def validate_symbol_detections_against_counts_csv(detections_csv: Path, answer_key_csv: Path, out_dir: Path) -> tuple[Path, Path]:
+    detection_sheet_tag = _detection_counts(detections_csv)
+    answer_sheet_tag = _answer_key_counts(answer_key_csv)
+    return _write_comparison(
+        detections_csv=detections_csv,
+        answer_key_path=answer_key_csv,
+        answer_key_label="CSV",
+        detection_sheet_tag=detection_sheet_tag,
+        answer_sheet_tag=answer_sheet_tag,
+        out_dir=out_dir,
+    )
+
+
+def validate_symbol_detections(detections_csv: Path, tpx: Path, out_dir: Path) -> tuple[Path, Path]:
+    """Compare AI detections to a historical LiveCount TPX export.
+
+    This validator is intentionally conservative. If the TPX does not appear to
+    contain comparable lighting/fixture takeoff data, it reports that instead of
+    manufacturing an accuracy score from unrelated feeders, panels, or markup.
+    """
+
+    detection_sheet_tag = _detection_counts(detections_csv)
+    documents, points = read_tpx(tpx)
+    tpx_sheet_tag = _tpx_lighting_counts(documents, points)
+
+    detection_tag = _by_tag(detection_sheet_tag)
+    tpx_tag = _by_tag(tpx_sheet_tag)
+
+    tpx_layer_counts: Counter[str] = Counter(point.layer or "(blank)" for point in points)
+    tpx_desc_samples = Counter(point.description for point in points).most_common(12)
+    extra_lines = ["Layer counts:", ""]
+    extra_lines.extend(f"- {layer}: {qty}" for layer, qty in tpx_layer_counts.most_common())
+    extra_lines.extend(["", "Common TPX descriptions:", ""])
+    extra_lines.extend(f"- {qty} x {desc}" for desc, qty in tpx_desc_samples)
+
+    return _write_comparison(
+        detections_csv=detections_csv,
+        answer_key_path=tpx,
+        answer_key_label="LiveCount TPX",
+        detection_sheet_tag=detection_sheet_tag,
+        answer_sheet_tag=tpx_sheet_tag,
+        out_dir=out_dir,
+        extra_sections=[("TPX contents observed", extra_lines)],
+    )

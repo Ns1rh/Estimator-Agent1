@@ -26,7 +26,10 @@ from work.estimating_agent.project_scan import project_dirs, scan_project, write
 from work.estimating_agent.project_intake import write_intake_outputs
 from work.estimating_agent.sheet_map import read_sheet_map, write_sheet_map_template
 from work.estimating_agent.symbol_detection import detect_light_fixtures
-from work.estimating_agent.symbol_validation import validate_symbol_detections
+from work.estimating_agent.symbol_validation import (
+    validate_symbol_detections,
+    validate_symbol_detections_against_counts_csv,
+)
 from work.estimating_agent.training_set import build_training_set
 from work.estimating_agent.validation import validate_training_set
 from work.estimating_agent.web_accubid_prep import write_web_accubid_prep
@@ -179,6 +182,14 @@ def main() -> None:
     validate_symbols_parser.add_argument("--detections", type=Path, required=True)
     validate_symbols_parser.add_argument("--tpx", type=Path, required=True)
     validate_symbols_parser.add_argument("--out-dir", type=Path, required=True)
+
+    validate_counts_parser = subparsers.add_parser(
+        "validate-detections-csv",
+        help="Compare Phase 3 symbol detections against a simple sheet/tag/quantity answer-key CSV.",
+    )
+    validate_counts_parser.add_argument("--detections", type=Path, required=True)
+    validate_counts_parser.add_argument("--answer-key", type=Path, required=True)
+    validate_counts_parser.add_argument("--out-dir", type=Path, required=True)
 
     args = parser.parse_args()
 
@@ -355,6 +366,15 @@ def main() -> None:
         details_csv, report_md = validate_symbol_detections(
             args.detections,
             args.tpx,
+            args.out_dir,
+        )
+        print(details_csv)
+        print(report_md)
+
+    if args.command == "validate-detections-csv":
+        details_csv, report_md = validate_symbol_detections_against_counts_csv(
+            args.detections,
+            args.answer_key,
             args.out_dir,
         )
         print(details_csv)
