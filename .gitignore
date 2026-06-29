@@ -1,0 +1,63 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local runtime/output data
+tmp/
+output/
+outputs/coworker-estimates/
+outputs/livecount-control/
+outputs/controlled-livecount-browser/
+outputs/database-prep/
+outputs/training-set/
+outputs/intake-packets/
+
+# Real estimating/project data - DO NOT COMMIT
+*.pdf
+*.tpx
+*.tlc
+*.es15
+*.es16
+*.est
+*.ebm
+*.dwg
+*.dxf
+*.rvt
+*.ifc
+*.xlsx
+*.xls
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+
+# Allow launcher/source docs if explicitly needed
+!outputs/agent-launcher/
+!outputs/agent-launcher/**
+!docs/
+!docs/**
+
+# Secrets/auth/session state
+*.env
+.env
+*.har
+cookies.json
+storageState.json
+playwright-profile/
+browser-profile/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
