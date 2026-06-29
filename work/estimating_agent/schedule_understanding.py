@@ -154,15 +154,27 @@ def _improve_schedule_readability(text: str) -> str:
         "GRIDMEDS": "GRID - MEDS",
         "GRIDOFFICES": "GRID - OFFICES",
         "GRIDGENERAL": "GRID - GENERAL",
+        "GRIDCORRIDORS": "GRID - CORRIDORS",
         "GYPSUMGENERAL": "GYPSUM - GENERAL",
         "GYPSUMMRI": "GYPSUM - MRI",
         "GYPSUMLOBBY": "GYPSUM - LOBBY",
+        "GYPSUMWAITING": "GYPSUM - WAITING",
         "WALLTOILETS": "WALL - TOILETS",
         "WALLRESPITE": "WALL - RESPITE",
+        "PENDANTRN": "PENDANT - RN",
+        "PENDANTELECTRICAL": "PENDANT - ELECTRICAL",
     }
     cleaned = text
     for before, after in replacements.items():
         cleaned = re.sub(before, after, cleaned, flags=re.I)
+    # Add a little breathing room around common electrical schedule values.
+    cleaned = re.sub(r"(?<=\d)(?=K,\s*\d{2}CRI)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=CRI)(?=\d{3,4})", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=\d)(?=WHITE\b|CLEAR\b|TBD\b)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=\d)(?=RECESSED\b|SURFACE\b|PENDANT\b)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=\w)(?=Dim to)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=\dW)(?=/F)", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?<=\d)(?=W/F)", " ", cleaned, flags=re.I)
     cleaned = re.sub(r"(?<=[a-z])(?=[A-Z]{2,}(?:\s|$))", " ", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
     return cleaned.strip()
