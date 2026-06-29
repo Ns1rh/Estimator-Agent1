@@ -106,6 +106,69 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
             )
 
 
+PLAN_WORDS = ("PLAN", "LIGHTING", "POWER", "ELECTRICAL", "FLOOR", "LEVEL")
+NON_PLAN_WORDS = (
+    "DETAIL",
+    "DETAILS",
+    "SCHEDULE",
+    "SCHEDULES",
+    "RISER",
+    "ONE-LINE",
+    "ONE LINE",
+    "DIAGRAM",
+    "LEGEND",
+    "NOTES",
+    "TITLE",
+    "INDEX",
+)
+
+
+def _sheet_priority(row: dict[str, str]) -> tuple[int, int, float, str]:
+    discipline = (row.get("discipline") or "").lower()
+    title = (row.get("sheet_title") or "").upper()
+    sheet = (row.get("sheet_number") or "").upper()
+    try:
+        confidence = float(row.get("confidence") or 0)
+    except ValueError:
+        confidence = 0.0
+
+    is_plan = any(word in title for word in PLAN_WORDS)
+    is_non_plan = any(word in title for word in NON_PLAN_WORDS)
+
+    if discipline == "lighting" and is_plan and not is_non_plan:
+        bucket = 0
+    elif discipline == "lighting" and not is_non_plan:
+        bucket = 1
+    elif discipline in {"electrical", "power"} and is_plan and not is_non_plan:
+        bucket = 2
+    elif discipline in {"electrical", "power"} and not is_non_plan:
+        bucket = 3
+    elif discipline in {"fire_alarm", "low_voltage", "electrical_demo"} and is_plan and not is_non_plan:
+        bucket = 4
+    else:
+        bucket = 9
+    return bucket, 0 if is_plan else 1, -confidence, sheet
+
+
+def _write_focused_sheet_index(sheet_index_csv: Path, out_path: Path, limit: int) -> tuple[Path, list[dict[str, str]]]:
+    rows = _read_csv(sheet_index_csv)
+    if not rows:
+        return sheet_index_csv, []
+
+    focused = sorted(rows, key=_sheet_priority)
+    useful = [row for row in focused if _sheet_priority(row)[0] < 9]
+    if useful:
+        focused = useful
+    focused = focused[: max(1, limit)]
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(focused)
+    return out_path, focused
+
+
 def _copy_if_exists(source: Path, destination: Path) -> bool:
     if source.exists():
         shutil.copy2(source, destination)
@@ -154,18 +217,25 @@ def run_estimator_workflow(
     rendered_dir = drawing_dir / "rendered_sheets"
     try:
         if sheet_index_csv and sheet_index_csv.exists():
+            focused_sheet_index_csv, selected_sheet_rows = _write_focused_sheet_index(
+                sheet_index_csv,
+                drawing_dir / "focused_sheet_index.csv",
+                max_sheets,
+            )
             drawing_dashboard, sheet_page_map, drawing_regions = write_drawing_intelligence_outputs(
                 project_folder,
-                sheet_index_csv,
+                focused_sheet_index_csv,
                 drawing_dir,
                 max_pages=120,
                 max_sheets=max_sheets,
             )
-            steps.append(("drawing_intelligence", "done", str(drawing_dashboard)))
+            steps.append(("drawing_intelligence", f"done: selected {len(selected_sheet_rows)} likely plan sheets", str(drawing_dashboard)))
         else:
+            selected_sheet_rows = []
             sheet_page_map = drawing_regions = Path("")
             steps.append(("drawing_intelligence", "skipped: no electrical sheet index", ""))
     except Exception as exc:
+        selected_sheet_rows = []
         sheet_page_map = drawing_regions = Path("")
         steps.append(("drawing_intelligence", f"failed: {exc}", ""))
 
@@ -206,6 +276,7 @@ def run_estimator_workflow(
     page_rows = _read_csv(sheet_page_map) if sheet_page_map and sheet_page_map.exists() else []
     takeoff_rows = _read_csv(takeoff_items)
     review_required = sum(1 for row in takeoff_rows if (row.get("review_required") or "").lower() in {"yes", "true", "1"})
+    selected_sheet_rows = selected_sheet_rows if "selected_sheet_rows" in locals() else []
 
     with project_dashboard.open("w", encoding="utf-8") as handle:
         handle.write(f"# Estimator coworker dashboard - {project_name}\n\n")
@@ -227,12 +298,22 @@ def run_estimator_workflow(
         handle.write("\n")
 
         handle.write("## What the agent found\n\n")
+        handle.write(f"- Project scanned: `{project_folder}`\n")
         handle.write(f"- Electrical sheet candidates from intake: {len(sheet_rows)}\n")
+        handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
 
-        if sheet_rows:
+        if selected_sheet_rows:
+            handle.write("### Sheets used for this run\n\n")
+            for row in selected_sheet_rows:
+                handle.write(
+                    f"- {row.get('sheet_number', '')} {row.get('sheet_title', '')} "
+                    f"({row.get('discipline', '')}, confidence {row.get('confidence', '')})\n"
+                )
+            handle.write("\n")
+        elif sheet_rows:
             handle.write("### First electrical sheet candidates\n\n")
             for row in sheet_rows[:15]:
                 handle.write(
@@ -256,7 +337,7 @@ def run_estimator_workflow(
             handle.write("2. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
             handle.write("3. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
         else:
-            handle.write("Review the sheet index and drawing intelligence outputs under `_internal/`; this run did not produce symbol detections yet.\n")
+            handle.write("This run did not produce symbol detections. Check whether the project folder contains searchable drawing PDFs and whether lighting/electrical plan sheets were selected under `_internal/02_drawing_intelligence/focused_sheet_index.csv`.\n")
         handle.write("\n## How to validate this run\n\n")
         handle.write("After reviewed quantities are entered in `validation_answer_key_template.csv`, run:\n\n")
         handle.write("```powershell\n")
