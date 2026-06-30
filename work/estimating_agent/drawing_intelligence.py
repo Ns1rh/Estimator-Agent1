@@ -234,7 +234,7 @@ def _score_sheet_page(target: SheetTarget, text: str) -> tuple[float, str]:
 
 def _candidate_pdfs(project_folder: Path, targets: list[SheetTarget]) -> list[Path]:
     from_targets = [target.source_pdf for target in targets if str(target.source_pdf) and target.source_pdf.exists()]
-    found = [pdf.path for pdf in find_pdf_candidates(project_folder, limit=12) if pdf.kind in {"drawings", "addendum"}]
+    found = [pdf.path for pdf in find_pdf_candidates(project_folder, limit=12)]
     seen: set[str] = set()
     result: list[Path] = []
     for pdf in [*from_targets, *found]:
@@ -305,7 +305,7 @@ def locate_sheet_pages(project_folder: Path, sheet_index_csv: Path, max_pages: i
 def _fallback_relevant_pages(project_folder: Path, max_pages: int = 80, max_sheets: int = 6) -> list[LocatedSheet]:
     """Pick renderable pages when a formal sheet index is missing or weak."""
     located: list[LocatedSheet] = []
-    pdfs = [pdf.path for pdf in find_pdf_candidates(project_folder, limit=10) if pdf.kind in {"drawings", "addendum", "other_pdf"}]
+    pdfs = [pdf.path for pdf in find_pdf_candidates(project_folder, limit=10)]
     for pdf in pdfs:
         for page_number, text in enumerate(_page_texts(pdf, max_pages=max_pages), 1):
             upper = text.upper()
