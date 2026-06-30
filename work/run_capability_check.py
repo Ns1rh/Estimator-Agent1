@@ -152,7 +152,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run randomized safe synthetic estimator-agent capability checks.")
     parser.add_argument("--cases", type=int, default=5)
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/capability-check"))
-    parser.add_argument("--start-seed", type=int, default=1)
+    parser.add_argument("--start-seed", "--seed-start", dest="start_seed", type=int, default=1)
     args = parser.parse_args()
 
     repo_root = Path.cwd()

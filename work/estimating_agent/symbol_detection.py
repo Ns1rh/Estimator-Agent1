@@ -43,6 +43,10 @@ def _sheet_from_image_name(path: Path) -> str:
 
 FIXTURE_LABEL = re.compile(r"^(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|X\d+[A-Z]?)(?:[a-z])?$")
 LABEL_NOISE = {"OS", "VS", "J", "A", "B", "C", "D", "E", "N", "S", "T"}
+NON_PLAN_HEADING = re.compile(
+    r"\b(?:LEGEND|SYMBOL\s+LEGEND|GENERAL\s+NOTES?|SHEET\s+NOTES?|LIGHTING\s+NOTES?|FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|SHEET\s+INDEX|TITLE\s+BLOCK)\b",
+    re.IGNORECASE,
+)
 
 
 def _review_category_for_label(label: str) -> str:
@@ -100,6 +104,35 @@ def _overlap_ratio(a: FixtureCandidate, b: FixtureCandidate) -> float:
     return overlap / max(1, smaller)
 
 
+def _text_exclusion_zones(
+    text_lines: list[tuple[str, int, int, int, int]],
+    image_w: int,
+    image_h: int,
+) -> list[tuple[int, int, int, int, str]]:
+    zones: list[tuple[int, int, int, int, str]] = []
+    for text, x, y, box_w, box_h in text_lines:
+        upper = text.upper()
+        if not NON_PLAN_HEADING.search(upper):
+            continue
+        # Exclude a modest block below headings. For sidebars/title blocks,
+        # extend to the right edge. For notes/legends in the body, keep the
+        # zone local so normal plan tags elsewhere still count.
+        if x > image_w * 0.55:
+            left = max(0, x - 18)
+            right = image_w
+        else:
+            left = max(0, x - 24)
+            right = min(image_w, x + max(260, box_w + 220))
+        top = max(0, y - box_h - 10)
+        bottom = min(image_h, y + max(70, int(image_h * 0.20)))
+        zones.append((left, top, right, bottom, upper[:40]))
+    return zones
+
+
+def _inside_exclusion_zone(x: int, y: int, zones: list[tuple[int, int, int, int, str]]) -> bool:
+    return any(left <= x <= right and top <= y <= bottom for left, top, right, bottom, _reason in zones)
+
+
 def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandidate]:
     image = Image.open(image_path)
     image_w, image_h = image.size
@@ -116,8 +149,16 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
     scale_x = image_w / page_w
     scale_y = image_h / page_h
     left, top, right, bottom = _plan_crop_bounds(image_w, image_h)
+    text_lines: list[tuple[str, int, int, int, int]] = []
 
     def visitor(text: str, cm, tm, font, size) -> None:
+        clean_text = re.sub(r"\s+", " ", text.strip())
+        if clean_text:
+            line_x = int(float(tm[4]) * scale_x)
+            line_y = int((page_h - float(tm[5])) * scale_y)
+            line_w = max(12, int(len(clean_text) * float(size) * scale_x * 0.55))
+            line_h = max(8, int(float(size) * scale_y * 1.25))
+            text_lines.append((clean_text, line_x, line_y, line_w, line_h))
         raw_tokens = re.split(r"\s+", text.strip())
         for token in raw_tokens:
             clean = token.strip().upper()
@@ -148,6 +189,9 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
         page.extract_text(visitor_text=visitor)
     except Exception:
         return []
+    zones = _text_exclusion_zones(text_lines, image_w, image_h)
+    if zones:
+        candidates = [cand for cand in candidates if not _inside_exclusion_zone(cand.cx, cand.cy, zones)]
     return _dedupe_label_candidates(candidates)
 
 

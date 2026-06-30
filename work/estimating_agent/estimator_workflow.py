@@ -363,6 +363,9 @@ def run_estimator_workflow(
 
     if internal_dir.exists():
         shutil.rmtree(internal_dir)
+    stale_validation_dir = out_dir / "validation"
+    if stale_validation_dir.exists():
+        shutil.rmtree(stale_validation_dir)
     for stale_file in [project_dashboard, takeoff_items, estimator_review, accubid_mapping, marked_up_drawings, validation_answer_key]:
         if stale_file.exists():
             stale_file.unlink()
