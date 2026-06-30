@@ -12,7 +12,10 @@ from pypdf import PdfReader, PdfWriter
 
 from work.estimating_agent.project_intake import (
     SHEET_INDEX_WORDS,
+    SHEET_NUMBER,
+    discipline_for,
     find_pdf_candidates,
+    infer_title,
     normalize_sheet_number,
     sheet_list_hits_from_text,
 )
@@ -34,6 +37,17 @@ REGION_KEYWORDS = {
     "plan_area": ("plan", "level", "roof", "floor plan", "lighting plan", "power plan", "fire alarm plan"),
     "title_block": ("sheet title", "sheet number", "issue", "revision", "northwestern", "drawn by", "checked by"),
 }
+RENDER_RELEVANT_WORDS = (
+    "LIGHTING PLAN",
+    "FIRE ALARM PLAN",
+    "LUMINAIRE SCHEDULE",
+    "FIXTURE SCHEDULE",
+    "EXIT",
+    "EMERGENCY",
+    "SMOKE DETECTOR",
+    "HORN/STROBE",
+    "HORN STROBE",
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +78,12 @@ class RegionHint:
     confidence: float
     location_hint: str
     reason: str
+
+
+@dataclass(frozen=True)
+class RenderResult:
+    images: list[Path]
+    debug_lines: list[str]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -228,7 +248,7 @@ def _candidate_pdfs(project_folder: Path, targets: list[SheetTarget]) -> list[Pa
 def locate_sheet_pages(project_folder: Path, sheet_index_csv: Path, max_pages: int = 80, max_sheets: int = 12) -> list[LocatedSheet]:
     targets = _target_sheets(sheet_index_csv, max_sheets)
     if not targets:
-        return []
+        return _fallback_relevant_pages(project_folder, max_pages=max_pages, max_sheets=max_sheets)
 
     pdfs = _candidate_pdfs(project_folder, targets)
     outline_maps = {pdf: _outline_sheet_pages(pdf) for pdf in pdfs}
@@ -275,7 +295,49 @@ def locate_sheet_pages(project_folder: Path, sheet_index_csv: Path, max_pages: i
                     best = candidate
         if best:
             located.append(best)
+    if not located:
+        return _fallback_relevant_pages(project_folder, max_pages=max_pages, max_sheets=max_sheets)
     located.sort(key=lambda item: (-item.page_score, DISCIPLINE_PRIORITY.get(item.target.discipline, 99), item.target.sheet_number))
+    return located
+
+
+def _fallback_relevant_pages(project_folder: Path, max_pages: int = 80, max_sheets: int = 6) -> list[LocatedSheet]:
+    """Pick renderable pages when a formal sheet index is missing or weak."""
+    located: list[LocatedSheet] = []
+    pdfs = [pdf.path for pdf in find_pdf_candidates(project_folder, limit=10) if pdf.kind in {"drawings", "addendum", "other_pdf"}]
+    for pdf in pdfs:
+        for page_number, text in enumerate(_page_texts(pdf, max_pages=max_pages), 1):
+            upper = text.upper()
+            hits = [word for word in RENDER_RELEVANT_WORDS if word in upper]
+            sheet_matches = [normalize_sheet_number(match.group(0)) for match in SHEET_NUMBER.finditer(text)]
+            if not hits and not sheet_matches:
+                continue
+            sheet_number = sheet_matches[0] if sheet_matches else f"PAGE{page_number}"
+            title = infer_title(text, sheet_number) or (" ".join(hits[:2]) if hits else "Relevant electrical page")
+            discipline = discipline_for(sheet_number, title)
+            if discipline == "other" and "FIRE ALARM" in upper:
+                discipline = "fire_alarm"
+            elif discipline == "other" and any(word in upper for word in ["LIGHTING", "LUMINAIRE", "EXIT", "EMERGENCY"]):
+                discipline = "lighting"
+            target = SheetTarget(
+                discipline=discipline,
+                sheet_number=sheet_number,
+                sheet_title=title,
+                confidence=0.55 if hits else 0.42,
+                source_pdf=pdf,
+            )
+            located.append(
+                LocatedSheet(
+                    target=target,
+                    pdf=pdf,
+                    page=page_number,
+                    page_score=0.62 if hits else 0.45,
+                    text_chars=len(text),
+                    reason=f"fallback relevant-page selection; hits={', '.join(hits[:5]) or 'sheet number only'}",
+                )
+            )
+            if len(located) >= max_sheets:
+                return located
     return located
 
 
@@ -320,15 +382,19 @@ def infer_region_hints(located: list[LocatedSheet], max_pages: int = 120) -> lis
     return regions
 
 
-def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render: int = 6) -> list[Path]:
+def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render: int = 6) -> RenderResult:
     render_dir = out_dir / "rendered_sheets"
     render_dir.mkdir(parents=True, exist_ok=True)
     temp_dir = out_dir / "_render_tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[Path] = []
+    debug: list[str] = []
     pdftoppm = _find_pdftoppm()
-    if not pdftoppm:
-        return rendered
+    debug.append(f"pdftoppm found: {pdftoppm if pdftoppm else 'no'}")
+    pymupdf_available = _pymupdf_available()
+    debug.append(f"PyMuPDF available: {'yes' if pymupdf_available else 'no'}")
+    if not located:
+        debug.append("No located sheets/pages were provided to renderer.")
 
     seen_pages: set[tuple[str, int]] = set()
     for sheet in located:
@@ -341,27 +407,66 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
         safe_sheet = re.sub(r"[^A-Za-z0-9._-]+", "_", sheet.target.sheet_number).strip("_")
         prefix = render_dir / f"{safe_sheet}_p{sheet.page}"
         one_page_pdf = temp_dir / f"{safe_sheet}_p{sheet.page}.pdf"
+        debug.append(f"Render attempt: sheet={sheet.target.sheet_number}, page={sheet.page}, pdf={sheet.pdf}")
         try:
             reader = PdfReader(str(sheet.pdf))
             writer = PdfWriter()
             writer.add_page(reader.pages[sheet.page - 1])
             with one_page_pdf.open("wb") as handle:
                 writer.write(handle)
-        except Exception:
+        except Exception as exc:
+            debug.append(f"  one-page PDF creation failed: {exc}")
             continue
-        try:
-            subprocess.run(
-                [str(pdftoppm), "-png", "-r", "120", str(one_page_pdf), str(prefix)],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=60,
-            )
-        except Exception:
-            continue
+        rendered_before = len(rendered)
+        if pdftoppm:
+            try:
+                subprocess.run(
+                    [str(pdftoppm), "-png", "-r", "120", str(one_page_pdf), str(prefix)],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                    text=True,
+                )
+                debug.append("  pdftoppm render succeeded")
+            except Exception as exc:
+                debug.append(f"  pdftoppm render failed: {exc}")
         matches = sorted(render_dir.glob(f"{prefix.name}-*.png"))
-        rendered.extend(matches)
-    return rendered
+        if matches:
+            rendered.extend(matches)
+        elif _render_page_with_pymupdf(sheet.pdf, sheet.page, render_dir / f"{prefix.name}-1.png"):
+            rendered.append(render_dir / f"{prefix.name}-1.png")
+            debug.append("  PyMuPDF fallback render succeeded")
+        elif not pdftoppm and not pymupdf_available:
+            debug.append("  no renderer available: pdftoppm not found and PyMuPDF not installed")
+        else:
+            debug.append("  selected page failed to render with all available methods")
+        if len(rendered) == rendered_before:
+            debug.append("  no image created for this page")
+    debug.append(f"Rendered page images created: {len(rendered)}")
+    return RenderResult(images=rendered, debug_lines=debug)
+
+
+def _pymupdf_available() -> bool:
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return False
+    return True
+
+
+def _render_page_with_pymupdf(pdf: Path, page_number: int, out_png: Path) -> bool:
+    try:
+        import fitz  # type: ignore
+
+        doc = fitz.open(str(pdf))
+        page = doc.load_page(page_number - 1)
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+        pix.save(str(out_png))
+        doc.close()
+        return out_png.exists()
+    except Exception:
+        return False
 
 
 def _find_pdftoppm() -> Path | None:
@@ -390,11 +495,13 @@ def write_drawing_intelligence_outputs(
     out_dir.mkdir(parents=True, exist_ok=True)
     located = locate_sheet_pages(project_folder, sheet_index_csv, max_pages=max_pages, max_sheets=max_sheets)
     regions = infer_region_hints(located, max_pages=max_pages)
-    rendered = render_located_sheets(located, out_dir)
+    render_result = render_located_sheets(located, out_dir)
+    rendered = render_result.images
 
     page_map_csv = out_dir / "sheet_page_map.csv"
     regions_csv = out_dir / "drawing_regions.csv"
     dashboard_md = out_dir / "drawing_intelligence.md"
+    render_debug_md = out_dir / "render_debug.md"
 
     with page_map_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -431,6 +538,28 @@ def write_drawing_intelligence_outputs(
 
     by_discipline = Counter(sheet.target.discipline for sheet in located)
     by_region = Counter(region.region_type for region in regions)
+    pdfs_discovered = find_pdf_candidates(project_folder, limit=20)
+    with render_debug_md.open("w", encoding="utf-8") as handle:
+        handle.write("# Render debug\n\n")
+        handle.write(f"- Input project path: `{project_folder}`\n")
+        handle.write(f"- PDFs discovered: {len(pdfs_discovered)}\n")
+        for candidate in pdfs_discovered[:20]:
+            handle.write(f"  - {candidate.kind}: `{candidate.path}`\n")
+        handle.write(f"- Selected sheets/pages: {len(located)}\n")
+        for sheet in located[:30]:
+            handle.write(f"  - {sheet.target.sheet_number} page {sheet.page} from `{sheet.pdf}`: {sheet.reason}\n")
+        handle.write(f"- Rendered page images created: {len(rendered)}\n\n")
+        handle.write("## Render attempts\n\n")
+        for line in render_result.debug_lines:
+            handle.write(f"- {line}\n")
+        if not rendered:
+            if not located:
+                reason = "No relevant lighting or fire alarm sheets selected"
+            elif not _find_pdftoppm() and not _pymupdf_available():
+                reason = "pdftoppm not found and PyMuPDF not installed"
+            else:
+                reason = "selected pages failed to render"
+            handle.write(f"\n## Placeholder reason if needed\n\n- {reason}\n")
     with dashboard_md.open("w", encoding="utf-8") as handle:
         handle.write(f"# Drawing Intelligence - {project_folder.name}\n\n")
         handle.write("This is Phase 2 starter output. It uses the Phase 1 sheet index plus existing PDF text/rendering tools to locate likely sheet pages and identify useful estimating regions.\n\n")
@@ -441,6 +570,8 @@ def write_drawing_intelligence_outputs(
         handle.write(f"- Located sheet pages: {len(located)}\n")
         handle.write(f"- Region hints: {len(regions)}\n")
         handle.write(f"- Rendered previews: {len(rendered)}\n\n")
+        if not rendered:
+            handle.write("- Render warning: no page images were created. See `render_debug.md`.\n\n")
 
         handle.write("## Located disciplines\n\n")
         for discipline, count in by_discipline.most_common():
@@ -466,6 +597,7 @@ def write_drawing_intelligence_outputs(
         handle.write("\n## Outputs\n\n")
         handle.write("- `sheet_page_map.csv`\n")
         handle.write("- `drawing_regions.csv`\n")
+        handle.write("- `render_debug.md`\n")
         handle.write("- `rendered_sheets/` preview PNGs when rendering succeeds\n\n")
         handle.write("## Next estimator-agent step\n\n")
         handle.write("Use the located lighting sheets as the first target for symbol detection. Start with one symbol category, such as light fixtures, and compare detected counts against LiveCount/Accubid data when available.\n")

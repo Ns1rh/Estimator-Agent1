@@ -2,4 +2,4 @@ pypdf
 numpy
 Pillow
 reportlab
-
+PyMuPDF

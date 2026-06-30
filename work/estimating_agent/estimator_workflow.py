@@ -360,6 +360,7 @@ def run_estimator_workflow(
     validation_answer_key = out_dir / "validation_answer_key_template.csv"
     internal_dir = out_dir / "_internal"
     run_manifest = internal_dir / "workflow_manifest.csv"
+    render_debug = internal_dir / "render_debug.md"
 
     if internal_dir.exists():
         shutil.rmtree(internal_dir)
@@ -382,6 +383,7 @@ def run_estimator_workflow(
 
     drawing_dir = out_dir / "_internal" / "02_drawing_intelligence"
     rendered_dir = drawing_dir / "rendered_sheets"
+    render_problem = ""
     try:
         if sheet_index_csv and sheet_index_csv.exists():
             focused_sheet_index_csv, selected_sheet_rows = _write_focused_sheet_index(
@@ -396,15 +398,20 @@ def run_estimator_workflow(
                 max_pages=120,
                 max_sheets=max_sheets,
             )
+            _copy_if_exists(drawing_dir / "render_debug.md", render_debug)
             steps.append(("drawing_intelligence", f"done: selected {len(selected_sheet_rows)} likely plan sheets", str(drawing_dashboard)))
+            if not rendered_dir.exists() or not any(rendered_dir.glob("*.png")):
+                render_problem = "Drawing intelligence selected sheets/pages, but no rendered PNG images were created. See `_internal/render_debug.md`."
         else:
             selected_sheet_rows = []
             sheet_page_map = drawing_regions = Path("")
             steps.append(("drawing_intelligence", "skipped: no electrical sheet index", ""))
+            render_problem = "No electrical sheet index was available for drawing rendering."
     except Exception as exc:
         selected_sheet_rows = []
         sheet_page_map = drawing_regions = Path("")
         steps.append(("drawing_intelligence", f"failed: {exc}", ""))
+        render_problem = f"Drawing intelligence failed before rendering: {exc}"
 
     symbol_dir = out_dir / "_internal" / "03_symbol_detection"
     try:
@@ -421,7 +428,8 @@ def run_estimator_workflow(
         else:
             _write_empty_takeoff(takeoff_items)
             _write_empty_review(estimator_review)
-            steps.append(("symbol_detection_supported_categories", "skipped: no rendered sheets", ""))
+            reason = render_problem or "No rendered sheet images were available for symbol detection."
+            steps.append(("symbol_detection_supported_categories", f"skipped: {reason}", ""))
     except Exception as exc:
         _write_empty_takeoff(takeoff_items)
         _write_empty_review(estimator_review)
@@ -433,7 +441,8 @@ def run_estimator_workflow(
         _write_empty_review(estimator_review)
     if not marked_up_drawings.exists():
         last_status = steps[-1][1] if steps else "no symbol detection step ran"
-        _write_no_markups_pdf(marked_up_drawings, last_status)
+        placeholder_reason = render_problem or last_status
+        _write_no_markups_pdf(marked_up_drawings, placeholder_reason)
 
     schedule_dir = out_dir / "_internal" / "04_schedule_understanding"
     schedule_matches = 0
@@ -495,6 +504,14 @@ def run_estimator_workflow(
     fire_alarm_sheets = [row for row in selected_sheet_rows if (row.get("discipline") or "").lower() == "fire_alarm"]
     other_selected_sheets = [row for row in selected_sheet_rows if row not in lighting_sheets and row not in fire_alarm_sheets]
     marked_status = "created" if marked_up_drawings.exists() else "not created"
+    marked_is_placeholder = False
+    try:
+        from pypdf import PdfReader
+
+        marked_text = "\n".join(page.extract_text() or "" for page in PdfReader(str(marked_up_drawings)).pages[:1]) if marked_up_drawings.exists() else ""
+        marked_is_placeholder = "No marked-up drawings generated" in marked_text
+    except Exception:
+        marked_is_placeholder = False
     validation_dir = out_dir / "validation"
     validation_status = "not run yet; use the validation answer key after estimator review"
     if (validation_dir / "SYMBOL_DETECTION_VALIDATION.md").exists():
@@ -538,7 +555,13 @@ def run_estimator_workflow(
         handle.write(f"- Takeoff rows matched to schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
         handle.write("## Markup and validation status\n\n")
-        handle.write(f"- Marked drawing PDF: {marked_status} (`marked_up_drawings.pdf`)\n")
+        if marked_is_placeholder:
+            handle.write(f"- Marked drawing PDF: placeholder only (`marked_up_drawings.pdf`)\n")
+            handle.write(f"- Render problem: {render_problem or 'see `_internal/render_debug.md` for rendering diagnostics'}\n")
+        else:
+            handle.write(f"- Marked drawing PDF: {marked_status} (`marked_up_drawings.pdf`)\n")
+        if render_debug.exists():
+            handle.write(f"- Render diagnostics: `{render_debug}`\n")
         handle.write(f"- Validation status: {validation_status}\n\n")
 
         if review_category_counts:

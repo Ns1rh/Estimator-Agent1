@@ -192,6 +192,22 @@ def classify_project_file(path: Path) -> tuple[str, str, int]:
 
 def find_project_files(project_folder: Path, limit: int = 2000) -> list[ProjectFile]:
     files: list[ProjectFile] = []
+    if project_folder.is_file():
+        try:
+            size = project_folder.stat().st_size
+        except OSError:
+            size = 0
+        category, role, score = classify_project_file(project_folder)
+        return [
+            ProjectFile(
+                path=project_folder,
+                category=category,
+                role=role,
+                extension=project_folder.suffix.lower(),
+                size=size,
+                score=score,
+            )
+        ]
     for path in project_folder.rglob("*"):
         if not path.is_file():
             continue
@@ -220,6 +236,13 @@ def find_project_files(project_folder: Path, limit: int = 2000) -> list[ProjectF
 
 def find_pdf_candidates(project_folder: Path, limit: int = 40) -> list[PdfCandidate]:
     candidates: list[PdfCandidate] = []
+    if project_folder.is_file() and project_folder.suffix.lower() == ".pdf":
+        kind, score = classify_pdf(project_folder)
+        try:
+            size = project_folder.stat().st_size
+        except OSError:
+            size = 0
+        return [PdfCandidate(path=project_folder, kind=kind, size=size, score=score)]
     for path in project_folder.rglob("*.pdf"):
         if is_noise(path):
             continue

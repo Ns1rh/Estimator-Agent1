@@ -5,6 +5,8 @@ import csv
 import sys
 from pathlib import Path
 
+from pypdf import PdfReader
+
 
 REQUIRED_FILES = [
     "project_dashboard.md",
@@ -26,6 +28,15 @@ def _csv_has_data(path: Path) -> bool:
     with path.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.reader(handle))
     return len(rows) >= 2
+
+
+def _pdf_appears_placeholder(path: Path) -> bool:
+    try:
+        reader = PdfReader(str(path))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages[:1])
+    except Exception:
+        return False
+    return "No marked-up drawings generated" in text
 
 
 def check_outputs(out_dir: Path) -> tuple[bool, list[str]]:
@@ -52,7 +63,11 @@ def check_outputs(out_dir: Path) -> tuple[bool, list[str]]:
 
     marked_pdf = out_dir / "marked_up_drawings.pdf"
     if marked_pdf.exists() and marked_pdf.stat().st_size > 0:
-        messages.append("PASS marked_up_drawings.pdf is present and non-empty")
+        if _pdf_appears_placeholder(marked_pdf):
+            ok = False
+            messages.append("FAIL marked_up_drawings.pdf exists but appears to be a placeholder")
+        else:
+            messages.append("PASS marked_up_drawings.pdf is present, non-empty, and not the placeholder")
     elif marked_pdf.exists():
         ok = False
         messages.append("FAIL marked_up_drawings.pdf exists but is empty")
