@@ -46,9 +46,9 @@ The current useful workflow is light-fixture focused:
 
 - finds likely lighting/electrical plan sheets
 - renders selected sheets
-- detects searchable light fixture tags on lighting plans
-- groups counts by sheet and fixture tag
-- connects many fixture tags to fixture schedule descriptions when searchable schedule text exists
+- detects searchable light fixture, exit sign, emergency light, and fire alarm device tags on likely plan sheets
+- groups counts by category, sheet, and tag
+- connects many tags to schedule descriptions when searchable schedule text exists
 - produces an Accubid-ready mapping template for estimator review
 
 All quantities are marked for estimator review. This is not final bid output yet.

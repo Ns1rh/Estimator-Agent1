@@ -1,6 +1,6 @@
 # Estimator Agent Demo
 
-This project currently demonstrates a first-pass light fixture takeoff review workflow.
+This project currently demonstrates a first-pass electrical takeoff review workflow for light fixtures, exit signs, emergency lights, and fire alarm devices.
 
 It does not use company drawings. It does not price work. It does not create an Accubid database. It is not final bid output.
 
@@ -44,9 +44,9 @@ Later, run the same `estimate-project` command against reviewed public project d
 
 Real outputs still require estimator review, especially:
 
-- fixture quantities
-- fixture schedule descriptions
-- fixture tags missing from schedule
+- detected quantities
+- schedule descriptions
+- tags missing from schedule
 - schedule tags not found on selected plan sheets
 - Accubid item/assembly mapping
 
@@ -62,4 +62,4 @@ Open these in order:
 
 The short explanation:
 
-> Project folder in. First-pass light fixture takeoff review package out. The smoke demo proves the workflow, and the randomized capability check gives a more honest measure of current detection ability.
+> Project folder in. First-pass estimator review package out. The smoke demo proves the workflow, and the randomized capability check gives a more honest measure of current detection ability.

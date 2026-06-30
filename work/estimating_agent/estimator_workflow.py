@@ -490,7 +490,7 @@ def run_estimator_workflow(
     with project_dashboard.open("w", encoding="utf-8") as handle:
         handle.write(f"# Estimator coworker dashboard - {project_name}\n\n")
         handle.write("This is a first-pass estimator review package, not final bid output.\n\n")
-        handle.write("Use this dashboard plus the estimator files below to review the light fixture takeoff.\n\n")
+        handle.write("Use this dashboard plus the estimator files below to review the first-pass electrical takeoff.\n\n")
         handle.write("## Primary outputs\n\n")
         handle.write(f"- `takeoff_items.csv` - detected/countable items for estimator review\n")
         handle.write(f"- `estimator_review.csv` - item-level evidence and review flags\n")
@@ -516,12 +516,12 @@ def run_estimator_workflow(
         handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
-        handle.write(f"- Total first-pass light fixture quantity: {total_fixture_qty}\n")
-        handle.write(f"- Takeoff rows matched to fixture schedule descriptions: {schedule_matched_rows}\n")
+        handle.write(f"- Total first-pass detected quantity: {total_fixture_qty}\n")
+        handle.write(f"- Takeoff rows matched to schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
         if review_category_counts:
-            handle.write("### Candidate quality buckets\n\n")
-            handle.write("These buckets help the estimator decide what to trust first. They do not make quantities final.\n\n")
+            handle.write("### Detected categories\n\n")
+            handle.write("These categories help the estimator decide what to review first. They do not make quantities final.\n\n")
             for category, count in sorted(review_category_counts.items()):
                 handle.write(f"- {category}: {count} takeoff rows\n")
             handle.write("\n")
@@ -544,16 +544,18 @@ def run_estimator_workflow(
             handle.write("\n")
 
         if takeoff_rows:
-            handle.write("### Counts by fixture tag\n\n")
-            tag_counts: dict[str, int] = {}
+            handle.write("### Counts by category/tag\n\n")
+            tag_counts: dict[tuple[str, str], int] = {}
             for row in takeoff_rows:
                 try:
-                    tag_counts[row.get("tag", "")] = tag_counts.get(row.get("tag", ""), 0) + int(float(row.get("quantity") or 0))
+                    key = (row.get("category", ""), row.get("tag", ""))
+                    tag_counts[key] = tag_counts.get(key, 0) + int(float(row.get("quantity") or 0))
                 except ValueError:
-                    tag_counts[row.get("tag", "")] = tag_counts.get(row.get("tag", ""), 0)
-            for tag, qty in sorted(tag_counts.items()):
+                    key = (row.get("category", ""), row.get("tag", ""))
+                    tag_counts[key] = tag_counts.get(key, 0)
+            for (category, tag), qty in sorted(tag_counts.items()):
                 if tag:
-                    handle.write(f"- {tag}: {qty}\n")
+                    handle.write(f"- {category} / {tag}: {qty}\n")
             handle.write("\n### First takeoff item candidates\n\n")
             for row in takeoff_rows[:15]:
                 handle.write(
@@ -567,11 +569,11 @@ def run_estimator_workflow(
 
             handle.write("### Schedule cross-checks\n\n")
             if tags_missing_schedule:
-                handle.write("Plan tags missing from fixture schedule match:\n")
+                handle.write("Plan tags missing from schedule match:\n")
                 for tag in tags_missing_schedule[:30]:
                     handle.write(f"- {tag}\n")
             else:
-                handle.write("- No detected plan tags are missing from the matched fixture schedule.\n")
+                handle.write("- No detected plan tags are missing from the matched schedule.\n")
             if schedule_tags_not_on_plans:
                 handle.write("\nSchedule tags not found on selected plan sheets:\n")
                 for tag in schedule_tags_not_on_plans[:30]:
@@ -581,7 +583,7 @@ def run_estimator_workflow(
         handle.write("## Estimator next action\n\n")
         if takeoff_rows:
             handle.write("1. Review `takeoff_items.csv` and `marked_up_drawings.pdf`.\n")
-            handle.write("2. Confirm any fixture schedule descriptions that were automatically attached.\n")
+            handle.write("2. Confirm any schedule descriptions that were automatically attached.\n")
             handle.write("3. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
             handle.write("4. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
         else:

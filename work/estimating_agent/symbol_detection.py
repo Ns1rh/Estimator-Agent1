@@ -22,6 +22,8 @@ class FixtureCandidate:
     y: int
     width: int
     height: int
+    category: str
+    tag: str
     symbol_type: str
     confidence: float
     reason: str
@@ -41,10 +43,14 @@ def _sheet_from_image_name(path: Path) -> str:
     return match.group(1).upper() if match else path.stem.upper()
 
 
-FIXTURE_LABEL = re.compile(r"^(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|X\d+[A-Z]?)(?:[a-z])?$")
+LABEL_TOKEN = re.compile(
+    r"^(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EMER|EXIT|EX|X\d*[A-Z]?|SD|HD|DD|PS|PULL|HS|H/S|FACP|FAAP|NAC|MM|MON|CM|CTRL)(?:[a-z])?$",
+    re.IGNORECASE,
+)
 LABEL_NOISE = {"OS", "VS", "J", "A", "B", "C", "D", "E", "N", "S", "T"}
+FIRE_ALARM_TOKENS = {"SD", "HD", "DD", "PS", "PULL", "HS", "H/S", "FACP", "FAAP", "NAC", "MM", "MON", "CM", "CTRL"}
 NON_PLAN_HEADING = re.compile(
-    r"\b(?:LEGEND|SYMBOL\s+LEGEND|GENERAL\s+NOTES?|SHEET\s+NOTES?|LIGHTING\s+NOTES?|FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|SHEET\s+INDEX|TITLE\s+BLOCK)\b",
+    r"\b(?:LEGEND|SYMBOL\s+LEGEND|GENERAL\s+NOTES?|SHEET\s+NOTES?|LIGHTING\s+NOTES?|FIRE\s+ALARM\s+NOTES?|FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|FIRE\s+ALARM\s+DEVICE\s+SCHEDULE|SHEET\s+INDEX|TITLE\s+BLOCK)\b",
     re.IGNORECASE,
 )
 
@@ -52,13 +58,38 @@ NON_PLAN_HEADING = re.compile(
 def _review_category_for_label(label: str) -> str:
     """Separate strong fixture labels from tags that should stay visible but not trusted blindly."""
     upper = label.upper()
-    if upper == "EXIT" or upper.startswith("EM") or upper == "EMS":
+    if upper in {"EXIT", "EX", "X"} or upper.startswith("EM") or upper == "EMS":
         return "likely_fixture_tag"
+    if upper in FIRE_ALARM_TOKENS:
+        return "likely_device_tag"
     if re.match(r"^[A-Z]\d{1,2}[A-Z]?$", upper):
         return "likely_fixture_tag"
-    if re.match(r"^X\d+[A-Z]?$", upper):
+    if re.match(r"^X\d*[A-Z]?$", upper):
         return "possible_fixture_tag"
     return "possible_fixture_tag"
+
+
+def _classify_label(label: str, sheet_number: str, sheet_text: str) -> tuple[str, str, float, str] | None:
+    """Map drawing label tokens into estimator-facing categories.
+
+    This intentionally stays generic: it reads tags from the drawing/schedule
+    text and sheet context, but does not hardcode expected quantities or
+    coordinates for any test case.
+    """
+    upper = label.upper()
+    context = f"{sheet_number} {sheet_text}".upper()
+    fire_context = any(word in context for word in ["FIRE ALARM", "FA-", "FA1", "FA2", "SMOKE", "HEAT", "HORN", "STROBE", "PULL", "FACP", "FAAP"])
+    if upper in FIRE_ALARM_TOKENS:
+        return "fire_alarm_device", upper, 0.86, "embedded PDF fire alarm device label positioned on plan"
+    if upper in {"EXIT", "EX"} or re.match(r"^X\d*[A-Z]?$", upper):
+        return "exit_sign", upper, 0.86, "embedded PDF exit sign label positioned on plan"
+    if upper.startswith("EM") or upper in {"EMS", "EMER"}:
+        return "emergency_light", upper, 0.86, "embedded PDF emergency light label positioned on plan"
+    if re.match(r"^[A-Z]\d{1,2}[A-Z]?$", upper):
+        if fire_context and upper in {"H1", "H2", "S1", "S2"}:
+            return "fire_alarm_device", upper, 0.80, "embedded PDF fire alarm device-like label positioned on fire alarm plan"
+        return "light_fixture", upper, 0.86, "embedded PDF light fixture label positioned on plan"
+    return None
 
 
 def _one_page_pdf_for_image(image_path: Path) -> Path | None:
@@ -150,6 +181,7 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
     scale_y = image_h / page_h
     left, top, right, bottom = _plan_crop_bounds(image_w, image_h)
     text_lines: list[tuple[str, int, int, int, int]] = []
+    raw_label_hits: list[tuple[str, int, int, int, int]] = []
 
     def visitor(text: str, cm, tm, font, size) -> None:
         clean_text = re.sub(r"\s+", " ", text.strip())
@@ -162,7 +194,7 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
         raw_tokens = re.split(r"\s+", text.strip())
         for token in raw_tokens:
             clean = token.strip().upper()
-            if clean in LABEL_NOISE or not FIXTURE_LABEL.match(token.strip()):
+            if clean in LABEL_NOISE or not LABEL_TOKEN.match(token.strip()):
                 continue
             x = int(float(tm[4]) * scale_x)
             y = int((page_h - float(tm[5])) * scale_y)
@@ -170,26 +202,37 @@ def _pdf_label_candidates(image_path: Path, pdf_path: Path) -> list[FixtureCandi
                 continue
             box_w = max(16, int(len(clean) * float(size) * scale_x * 0.62))
             box_h = max(10, int(float(size) * scale_y * 1.25))
-            candidates.append(
-                FixtureCandidate(
-                    sheet_number=sheet_number,
-                    source_image=image_path,
-                    x=x,
-                    y=max(0, y - box_h),
-                    width=box_w,
-                    height=box_h,
-                    symbol_type=f"fixture_label_{clean}",
-                    confidence=0.86,
-                    reason="embedded PDF text label positioned on lighting plan",
-                    review_category=_review_category_for_label(clean),
-                )
-            )
+            raw_label_hits.append((clean, x, max(0, y - box_h), box_w, box_h))
 
     try:
         page.extract_text(visitor_text=visitor)
     except Exception:
         return []
     zones = _text_exclusion_zones(text_lines, image_w, image_h)
+    sheet_text = " ".join(text for text, *_rest in text_lines)
+    for clean, x, y, box_w, box_h in raw_label_hits:
+        if _inside_exclusion_zone(x + box_w // 2, y + box_h // 2, zones):
+            continue
+        classified = _classify_label(clean, sheet_number, sheet_text)
+        if not classified:
+            continue
+        category, tag, confidence, reason = classified
+        candidates.append(
+            FixtureCandidate(
+                sheet_number=sheet_number,
+                source_image=image_path,
+                x=x,
+                y=y,
+                width=box_w,
+                height=box_h,
+                category=category,
+                tag=tag,
+                symbol_type=f"{category}_label_{tag}",
+                confidence=confidence,
+                reason=reason,
+                review_category=_review_category_for_label(clean),
+            )
+        )
     if zones:
         candidates = [cand for cand in candidates if not _inside_exclusion_zone(cand.cx, cand.cy, zones)]
     return _dedupe_label_candidates(candidates)
@@ -333,6 +376,8 @@ def _component_candidates(mask: np.ndarray, crop_offset: tuple[int, int], source
                 y=y + oy,
                 width=w,
                 height=h,
+                category="light_fixture",
+                tag=symbol_type,
                 symbol_type=symbol_type,
                 confidence=round(confidence, 2),
                 reason=f"connected-component fixture candidate; aspect={aspect:.2f}; fill={fill:.2f}; border={border_ratio:.2f}",
@@ -394,10 +439,14 @@ def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path) -> l
         image = Image.open(image_path).convert("RGB")
         draw = ImageDraw.Draw(image)
         for idx, cand in enumerate(items, 1):
-            if cand.review_category == "likely_fixture_tag":
+            if cand.category == "light_fixture":
                 color = (255, 0, 0)
-            elif cand.review_category == "possible_fixture_tag":
-                color = (255, 165, 0)
+            elif cand.category == "exit_sign":
+                color = (0, 150, 60)
+            elif cand.category == "emergency_light":
+                color = (0, 90, 255)
+            elif cand.category == "fire_alarm_device":
+                color = (150, 0, 200)
             else:
                 color = (255, 200, 0) if cand.confidence >= 0.7 else (255, 165, 0)
             draw.rectangle([cand.x, cand.y, cand.x + cand.width, cand.y + cand.height], outline=color, width=3)
@@ -437,33 +486,38 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
 
     takeoff_csv = out_dir / "takeoff_items.csv"
     review_csv = out_dir / "estimator_review.csv"
-    summary_md = out_dir / "light_fixture_detection.md"
+    summary_md = out_dir / "symbol_detection.md"
 
-    counts = Counter((cand.sheet_number, cand.symbol_type, cand.review_category) for cand in candidates)
-    category_counts = Counter(cand.review_category for cand in candidates)
+    counts = Counter((cand.sheet_number, cand.category, cand.tag, cand.symbol_type, cand.review_category) for cand in candidates)
+    category_counts = Counter(cand.category for cand in candidates)
 
     with takeoff_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["item", "quantity", "sheet", "location", "confidence", "reason", "review_category", "review_required"])
-        for (sheet, symbol_type, review_category), qty in sorted(counts.items()):
+        writer.writerow(["item", "category", "tag", "quantity", "sheet", "location", "confidence", "reason", "review_category", "review_required"])
+        for (sheet, category, tag, symbol_type, review_category), qty in sorted(counts.items()):
             sheet_candidates = [
                 c
                 for c in candidates
-                if c.sheet_number == sheet and c.symbol_type == symbol_type and c.review_category == review_category
+                if c.sheet_number == sheet and c.category == category and c.tag == tag and c.symbol_type == symbol_type and c.review_category == review_category
             ]
             avg_conf = sum(c.confidence for c in sheet_candidates) / max(1, len(sheet_candidates))
-            if symbol_type.startswith("fixture_label_"):
-                item_name = f"LIGHT FIXTURE TAG {symbol_type.removeprefix('fixture_label_')}"
-                if review_category == "likely_fixture_tag":
-                    reason = "embedded PDF fixture label positioned on lighting plan"
-                else:
-                    reason = "embedded PDF fixture-like label; estimator should confirm it is a fixture schedule tag"
+            if "_label_" in symbol_type:
+                label = {
+                    "light_fixture": "LIGHT FIXTURE",
+                    "exit_sign": "EXIT SIGN",
+                    "emergency_light": "EMERGENCY LIGHT",
+                    "fire_alarm_device": "FIRE ALARM DEVICE",
+                }.get(category, category.replace("_", " ").upper())
+                item_name = f"{label} TAG {tag}"
+                reason = sheet_candidates[0].reason if sheet_candidates else "embedded PDF label positioned on plan"
             else:
                 item_name = f"LIGHT FIXTURE CANDIDATE - {symbol_type}"
                 reason = "visual rectangular/linear fixture candidates"
             writer.writerow(
                 [
                     item_name,
+                    category,
+                    tag,
                     qty,
                     sheet,
                     "rendered drawing coordinates",
@@ -476,11 +530,13 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
 
     with review_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sheet", "symbol_type", "x", "y", "width", "height", "confidence", "reason", "review_category", "source_image"])
+        writer.writerow(["sheet", "category", "tag", "symbol_type", "x", "y", "width", "height", "confidence", "reason", "review_category", "source_image"])
         for cand in candidates:
             writer.writerow(
                 [
                     cand.sheet_number,
+                    cand.category,
+                    cand.tag,
                     cand.symbol_type,
                     cand.x,
                     cand.y,
@@ -494,25 +550,25 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
             )
 
     with summary_md.open("w", encoding="utf-8") as handle:
-        handle.write("# Light fixture symbol detection\n\n")
-        handle.write("This is the first Phase 3 detector. It uses embedded PDF fixture labels when available, then falls back to rendered-sheet visual linework heuristics.\n\n")
+        handle.write("# Symbol detection\n\n")
+        handle.write("This Phase 3 detector handles first-pass light fixtures, exit signs, emergency lights, and fire alarm device labels. It uses embedded PDF labels when available, then falls back to rendered-sheet visual linework heuristics for light fixture candidates.\n\n")
         handle.write("This is not final takeoff yet. Every count is marked `review_required` until validated against LiveCount, Accubid, or human takeoff.\n\n")
         handle.write("## Summary\n\n")
         handle.write(f"- Rendered sheet images scanned: {len(images)}\n")
-        handle.write(f"- Candidate fixture labels/symbols found: {len(candidates)}\n")
+        handle.write(f"- Candidate labels/symbols found: {len(candidates)}\n")
         handle.write(f"- Marked image previews: {len(marked_images)}\n\n")
-        handle.write("## Candidate quality buckets\n\n")
+        handle.write("## Categories\n\n")
         if category_counts:
             for category, qty in sorted(category_counts.items()):
                 handle.write(f"- {category}: {qty}\n")
         else:
-            handle.write("- No candidate quality buckets found.\n")
+            handle.write("- No candidate categories found.\n")
         handle.write("\n")
         handle.write("## Counts by sheet/type\n\n")
-        for (sheet, symbol_type, review_category), qty in sorted(counts.items()):
-            handle.write(f"- {sheet} / {symbol_type} / {review_category}: {qty}\n")
+        for (sheet, category, tag, symbol_type, review_category), qty in sorted(counts.items()):
+            handle.write(f"- {sheet} / {category} / {tag} / {review_category}: {qty}\n")
         if not counts:
-            handle.write("- No fixture candidates found.\n")
+            handle.write("- No candidates found.\n")
         handle.write("\n## Outputs\n\n")
         handle.write("- `takeoff_items.csv`\n")
         handle.write("- `estimator_review.csv`\n")

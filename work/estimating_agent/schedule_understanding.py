@@ -25,9 +25,11 @@ SCHEDULE_TITLE_WORDS = (
     "LIGHT FIXTURE SCHEDULE",
     "LUMINAIRE SCHEDULE",
     "FIXTURE SCHEDULE",
+    "FIRE ALARM DEVICE SCHEDULE",
+    "FIRE ALARM SCHEDULE",
 )
 
-SCHEDULE_ROW_TAG = re.compile(r"(?<![A-Z0-9])(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|X\d+[A-Z]?)(?![a-z])")
+SCHEDULE_ROW_TAG = re.compile(r"(?<![A-Z0-9])(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|EX|X\d*[A-Z]?|SD|HD|DD|PS|PULL|HS|H/S|FACP|FAAP|NAC|MM|MON|CM|CTRL)(?![a-z])", re.IGNORECASE)
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -48,8 +50,8 @@ def _tag_from_item(item: str) -> str:
 def tags_from_takeoff_items(takeoff_items_csv: Path) -> list[str]:
     tags: set[str] = set()
     for row in _read_csv(takeoff_items_csv):
-        tag = _tag_from_item(row.get("item", ""))
-        if tag and re.match(r"^[A-Z]{1,3}\d{0,2}[A-Z]?$|^EXIT$", tag):
+        tag = (row.get("tag") or _tag_from_item(row.get("item", ""))).upper().strip()
+        if tag and re.match(r"^[A-Z]{1,4}\d{0,2}[A-Z]?$|^EXIT$|^PULL$|^FACP$|^FAAP$|^H/S$", tag):
             tags.add(tag)
     return sorted(tags, key=lambda value: (-len(value), value))
 
@@ -126,7 +128,7 @@ def _candidate_schedule_texts(project_folder: Path, max_pages: int = 160) -> lis
             upper = text.upper()
             if any(word in upper for word in SCHEDULE_TITLE_WORDS):
                 seen.add(key)
-                candidates.append((pdf, page_number, text, "page text contains fixture schedule title"))
+                candidates.append((pdf, page_number, text, "page text contains schedule title"))
     return candidates
 
 
@@ -191,10 +193,10 @@ def _fixture_schedule_section(text: str) -> str:
         starts = [upper.rfind(word) for word in SCHEDULE_TITLE_WORDS if upper.rfind(word) >= 0]
         if not starts:
             return text
-        start = max(starts)
+        start = min(starts)
     section = text[start:]
     section_upper = section.upper()
-    note_match = re.search(r"\b(?:SCHEDULE NOTES|LIGHTING FIXTURE SCHEDULE NOTES|FIXTURE SCHEDULE NOTES)\b", section_upper)
+    note_match = re.search(r"\b(?:SCHEDULE NOTES|LIGHTING FIXTURE SCHEDULE NOTES|FIXTURE SCHEDULE NOTES|FIRE ALARM SCHEDULE NOTES)\b", section_upper)
     if note_match:
         return section[: note_match.start()]
     return section
@@ -275,8 +277,8 @@ def write_fixture_schedule_outputs(project_folder: Path, takeoff_items_csv: Path
             writer.writerow([entry.tag, entry.description, entry.confidence, str(entry.source_pdf), entry.page, entry.reason])
 
     with summary_md.open("w", encoding="utf-8") as handle:
-        handle.write("# Fixture schedule understanding\n\n")
-        handle.write("This internal step connects detected fixture tags to likely fixture schedule descriptions when the project drawings/specs expose searchable text.\n\n")
+        handle.write("# Schedule understanding\n\n")
+        handle.write("This internal step connects detected tags to likely fixture/device schedule descriptions when the project drawings/specs expose searchable text.\n\n")
         handle.write(f"- Takeoff tags checked: {len(tags)}\n")
         handle.write(f"- Schedule entries matched: {len(entries)}\n\n")
         if entries:
@@ -284,6 +286,6 @@ def write_fixture_schedule_outputs(project_folder: Path, takeoff_items_csv: Path
             for entry in entries[:40]:
                 handle.write(f"- {entry.tag}: {entry.description} (page {entry.page})\n")
         else:
-            handle.write("No fixture schedule entries were matched. The estimator should check whether the schedule is scanned, missing, or named differently.\n")
+            handle.write("No schedule entries were matched. The estimator should check whether the schedule is scanned, missing, or named differently.\n")
 
     return summary_md, entries_csv

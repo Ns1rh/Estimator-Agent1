@@ -15,12 +15,14 @@ from reportlab.pdfgen import canvas
 class FixtureType:
     tag: str
     description: str
+    category: str
 
 
 @dataclass(frozen=True)
 class FixturePlacement:
     sheet_number: str
     sheet_name: str
+    category: str
     tag: str
     x: int
     y: int
@@ -37,13 +39,24 @@ ROOM_NAMES = [
 ]
 
 FIXTURE_LIBRARY = [
-    FixtureType("A1", "2x4 LED TROFFER - SAFE DEMO LIGHTING STL-24"),
-    FixtureType("A2", "4 INCH LED DOWNLIGHT - SAFE DEMO LIGHTING SDL-4"),
-    FixtureType("A3", "LINEAR LED SLOT - SAFE DEMO LIGHTING SLS-8"),
-    FixtureType("B1", "DECORATIVE WALL SCONCE - SAFE DEMO LIGHTING SWS-1"),
-    FixtureType("C1", "UNDERCABINET LED STRIP - SAFE DEMO LIGHTING UCS-2"),
-    FixtureType("EM1", "EMERGENCY BATTERY UNIT - SAFE DEMO LIGHTING EBU-1"),
-    FixtureType("EXIT", "LED EXIT SIGN - SAFE DEMO LIGHTING SEX-1"),
+    FixtureType("A1", "2x4 LED TROFFER - SAFE DEMO LIGHTING STL-24", "light_fixture"),
+    FixtureType("A2", "4 INCH LED DOWNLIGHT - SAFE DEMO LIGHTING SDL-4", "light_fixture"),
+    FixtureType("A3", "LINEAR LED SLOT - SAFE DEMO LIGHTING SLS-8", "light_fixture"),
+    FixtureType("B1", "DECORATIVE WALL SCONCE - SAFE DEMO LIGHTING SWS-1", "light_fixture"),
+    FixtureType("C1", "UNDERCABINET LED STRIP - SAFE DEMO LIGHTING UCS-2", "light_fixture"),
+    FixtureType("EM1", "EMERGENCY BATTERY UNIT - SAFE DEMO LIGHTING EBU-1", "emergency_light"),
+    FixtureType("EXIT", "LED EXIT SIGN - SAFE DEMO LIGHTING SEX-1", "exit_sign"),
+]
+
+FIRE_ALARM_LIBRARY = [
+    FixtureType("SD", "SMOKE DETECTOR - SAFE DEMO FIRE ALARM SD-1", "fire_alarm_device"),
+    FixtureType("HD", "HEAT DETECTOR - SAFE DEMO FIRE ALARM HD-1", "fire_alarm_device"),
+    FixtureType("DD", "DUCT DETECTOR - SAFE DEMO FIRE ALARM DD-1", "fire_alarm_device"),
+    FixtureType("PULL", "MANUAL PULL STATION - SAFE DEMO FIRE ALARM MS-1", "fire_alarm_device"),
+    FixtureType("HS", "HORN STROBE - SAFE DEMO FIRE ALARM HS-1", "fire_alarm_device"),
+    FixtureType("FACP", "FIRE ALARM CONTROL PANEL - SAFE DEMO FACP-1", "fire_alarm_device"),
+    FixtureType("MM", "MONITOR MODULE - SAFE DEMO FIRE ALARM MM-1", "fire_alarm_device"),
+    FixtureType("CM", "CONTROL MODULE - SAFE DEMO FIRE ALARM CM-1", "fire_alarm_device"),
 ]
 
 
@@ -59,11 +72,19 @@ def _schedule_sheet_number(plan_sheet: str) -> str:
     return "E4.0"
 
 
+def _fire_alarm_sheet_number(rng: random.Random) -> str:
+    return rng.choice(["FA1.1", "FA101", "E6.1"])
+
+
 def _choose_fixture_types(rng: random.Random) -> list[FixtureType]:
     base = rng.sample(FIXTURE_LIBRARY[:6], k=rng.randint(2, 4))
     if rng.random() < 0.8:
         base.append(FIXTURE_LIBRARY[-1])
     return base
+
+
+def _choose_fire_alarm_types(rng: random.Random) -> list[FixtureType]:
+    return rng.sample(FIRE_ALARM_LIBRARY, k=rng.randint(2, 4))
 
 
 def _placements_for_types(
@@ -85,6 +106,7 @@ def _placements_for_types(
                 FixturePlacement(
                     sheet_number=sheet_number,
                     sheet_name=sheet_name,
+                    category=fixture_type.category,
                     tag=fixture_type.tag,
                     x=x + rng.randint(-5, 5),
                     y=y + rng.randint(-4, 4),
@@ -110,16 +132,16 @@ def _write_answer_key(out_dir: Path, project_name: str, source_pdf: Path, placem
     answer_dir = out_dir / "answer_key"
     answer_dir.mkdir(parents=True, exist_ok=True)
     answer_csv = answer_dir / "fixture_counts.csv"
-    counts: dict[tuple[str, str], int] = {}
+    counts: dict[tuple[str, str, str], int] = {}
     sheet_names: dict[str, str] = {}
     for placement in placements:
-        counts[(placement.sheet_number, placement.tag)] = counts.get((placement.sheet_number, placement.tag), 0) + 1
+        counts[(placement.sheet_number, placement.category, placement.tag)] = counts.get((placement.sheet_number, placement.category, placement.tag), 0) + 1
         sheet_names[placement.sheet_number] = placement.sheet_name
     with answer_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["project_name", "source_file", "sheet_number", "sheet_name", "category", "tag", "reviewed_quantity", "notes"])
-        for (sheet_number, tag), qty in sorted(counts.items()):
-            writer.writerow([project_name, str(source_pdf), sheet_number, sheet_names.get(sheet_number, ""), "LIGHT FIXTURE", tag, qty, "Synthetic answer key; validation only."])
+        for (sheet_number, category, tag), qty in sorted(counts.items()):
+            writer.writerow([project_name, str(source_pdf), sheet_number, sheet_names.get(sheet_number, ""), category, tag, qty, "Synthetic answer key; validation only."])
     return answer_csv
 
 
@@ -137,15 +159,21 @@ def create_demo_project(out_dir: Path, seed: int = 1) -> Path:
     if answer_dir.exists():
         shutil.rmtree(answer_dir)
 
-    project_name = f"Safe Synthetic Lighting Project {seed}"
+    project_name = f"Safe Synthetic Estimating Project {seed}"
     plan_sheet = _sheet_number(rng)
     plan_title = rng.choice(["LIGHTING PLAN - LEVEL 1", "LIGHTING PLAN - AREA A", "LIGHTING FLOOR PLAN"])
+    fire_sheet = _fire_alarm_sheet_number(rng)
+    fire_title = rng.choice(["FIRE ALARM PLAN - LEVEL 1", "FIRE ALARM FLOOR PLAN", "FIRE ALARM PLAN - AREA A"])
     schedule_sheet = _schedule_sheet_number(plan_sheet)
     fixture_types = _choose_fixture_types(rng)
-    placements = _placements_for_types(rng, plan_sheet, plan_title, fixture_types)
+    fire_alarm_types = _choose_fire_alarm_types(rng)
+    lighting_placements = _placements_for_types(rng, plan_sheet, plan_title, fixture_types)
+    fire_alarm_placements = _placements_for_types(rng, fire_sheet, fire_title, fire_alarm_types)
+    placements = [*lighting_placements, *fire_alarm_placements]
     unused_schedule = rng.choice([item for item in FIXTURE_LIBRARY if item not in fixture_types])
+    unused_fire_schedule = rng.choice([item for item in FIRE_ALARM_LIBRARY if item not in fire_alarm_types])
 
-    pdf_path = out_dir / f"safe_lighting_plans_seed_{seed}.pdf"
+    pdf_path = out_dir / f"safe_estimating_plans_seed_{seed}.pdf"
     c = canvas.Canvas(str(pdf_path), pagesize=landscape(letter))
     width, height = landscape(letter)
 
@@ -161,13 +189,34 @@ def create_demo_project(out_dir: Path, seed: int = 1) -> Path:
     c.setFont("Helvetica-Bold", 11)
     c.drawString(88, height - 145, rng.choice(ROOM_NAMES))
     c.setFont("Helvetica", 12)
-    for placement in placements:
+    for placement in lighting_placements:
         c.rect(placement.x - 8, placement.y - 5, 38, 18)
         c.drawString(placement.x, placement.y, placement.tag)
 
     c.setFont("Helvetica", 8)
     c.drawString(610, 300, "SYMBOL LEGEND")
     c.drawString(610, 286, "A1 = fixture tag example")
+    c.showPage()
+
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(48, height - 54, f"{fire_sheet} {fire_title}")
+    _draw_title_block(c, width, height, rng, project_name)
+
+    c.setFont("Helvetica", 8)
+    c.drawString(48, height - 88, rng.choice(["GENERAL NOTES", "FIRE ALARM NOTES", "SHEET NOTES"]))
+    fire_decoys = " ".join(item.tag for item in rng.sample(FIRE_ALARM_LIBRARY, k=2))
+    c.drawString(48, height - 102, f"Tags in notes/sidebar are review noise, not plan counts: {fire_decoys}")
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(88, height - 145, rng.choice(ROOM_NAMES))
+    c.setFont("Helvetica", 12)
+    for placement in fire_alarm_placements:
+        c.circle(placement.x + 8, placement.y + 6, 11)
+        c.drawString(placement.x, placement.y, placement.tag)
+
+    c.setFont("Helvetica", 8)
+    c.drawString(610, 300, "FIRE ALARM DEVICE LEGEND")
+    c.drawString(610, 286, "SD = smoke detector example")
     c.showPage()
 
     c.setFont("Helvetica-Bold", 18)
@@ -180,6 +229,13 @@ def create_demo_project(out_dir: Path, seed: int = 1) -> Path:
     y = height - 128
     for fixture_type in schedule_rows:
         c.drawString(48, y, f"{fixture_type.tag} {fixture_type.description}")
+        y -= 24
+    c.drawString(48, y - 10, "FIRE ALARM DEVICE SCHEDULE")
+    y -= 36
+    fire_schedule_rows = [*fire_alarm_types, unused_fire_schedule]
+    rng.shuffle(fire_schedule_rows)
+    for device_type in fire_schedule_rows:
+        c.drawString(48, y, f"{device_type.tag} {device_type.description}")
         y -= 24
     c.drawString(48, y - 20, "SCHEDULE NOTES")
     c.drawString(48, y - 38, "Synthetic file for estimator-agent capability checks only.")

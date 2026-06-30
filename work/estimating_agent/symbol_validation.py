@@ -45,19 +45,24 @@ def _tag_from_detection_row(row: dict[str, str]) -> str:
     return _normalize_tag(item or symbol_type or "UNKNOWN")
 
 
-def _detection_counts(path: Path) -> Counter[tuple[str, str]]:
-    counts: Counter[tuple[str, str]] = Counter()
+def _normalize_category(value: str) -> str:
+    return (value or "light_fixture").strip().lower().replace(" ", "_")
+
+
+def _detection_counts(path: Path) -> Counter[tuple[str, str, str]]:
+    counts: Counter[tuple[str, str, str]] = Counter()
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             sheet = _normalize_sheet(_first_present(row, ["sheet_number", "sheet", "drawing", "drawing_number"]))
+            category = _normalize_category(_first_present(row, ["category", "item_category"]))
             tag = _tag_from_detection_row(row)
             try:
                 qty = int(float(row.get("quantity", "") or 1))
             except ValueError:
                 qty = 1
             if sheet and tag:
-                counts[(sheet, tag)] += qty
+                counts[(category, sheet, tag)] += qty
     return counts
 
 
@@ -85,9 +90,9 @@ def _looks_lighting_related(point: TpxPoint, doc: TpxDocument | None) -> bool:
     return any(word in haystack for word in LIGHTING_WORDS)
 
 
-def _tpx_lighting_counts(documents: list[TpxDocument], points: list[TpxPoint]) -> Counter[tuple[str, str]]:
+def _tpx_lighting_counts(documents: list[TpxDocument], points: list[TpxPoint]) -> Counter[tuple[str, str, str]]:
     docs_by_page = _doc_lookup(documents)
-    counts: Counter[tuple[str, str]] = Counter()
+    counts: Counter[tuple[str, str, str]] = Counter()
     for point in points:
         doc = docs_by_page.get(point.page)
         if not _looks_lighting_related(point, doc):
@@ -95,14 +100,14 @@ def _tpx_lighting_counts(documents: list[TpxDocument], points: list[TpxPoint]) -
         tag_match = TAG_IN_TPX_DESCRIPTION.search(point.description.upper())
         tag = _normalize_tag(tag_match.group(0) if tag_match else point.description)
         sheet = _sheet_for_point(point, docs_by_page)
-        counts[(sheet, tag)] += 1
+        counts[("light_fixture", sheet, tag)] += 1
     return counts
 
 
-def _by_tag(counts: Counter[tuple[str, str]]) -> Counter[str]:
+def _by_tag(counts: Counter[tuple[str, str, str]]) -> Counter[str]:
     totals: Counter[str] = Counter()
-    for (_sheet, tag), qty in counts.items():
-        totals[tag] += qty
+    for (category, _sheet, tag), qty in counts.items():
+        totals[f"{category}:{tag}"] += qty
     return totals
 
 
@@ -115,7 +120,7 @@ def _first_present(row: dict[str, str], names: list[str]) -> str:
     return ""
 
 
-def _answer_key_counts(path: Path) -> Counter[tuple[str, str]]:
+def _answer_key_counts(path: Path) -> Counter[tuple[str, str, str]]:
     """Read a simple estimator answer-key CSV.
 
     Accepted columns are intentionally flexible:
@@ -127,13 +132,14 @@ def _answer_key_counts(path: Path) -> Counter[tuple[str, str]]:
     reviewed count table without matching an exact internal schema.
     """
 
-    counts: Counter[tuple[str, str]] = Counter()
+    counts: Counter[tuple[str, str, str]] = Counter()
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             sheet = _normalize_sheet(
                 _first_present(row, ["sheet", "drawing", "sheet_number", "drawing_number"])
             )
+            category = _normalize_category(_first_present(row, ["category", "item_category"]))
             tag = _normalize_tag(
                 _first_present(row, ["tag", "item", "fixture", "fixture_type", "symbol", "description"])
             )
@@ -143,7 +149,7 @@ def _answer_key_counts(path: Path) -> Counter[tuple[str, str]]:
             except ValueError:
                 continue
             if sheet and tag:
-                counts[(sheet, tag)] += qty
+                counts[(category, sheet, tag)] += qty
     return counts
 
 
@@ -151,8 +157,8 @@ def _write_comparison(
     detections_csv: Path,
     answer_key_path: Path,
     answer_key_label: str,
-    detection_sheet_tag: Counter[tuple[str, str]],
-    answer_sheet_tag: Counter[tuple[str, str]],
+    detection_sheet_tag: Counter[tuple[str, str, str]],
+    answer_sheet_tag: Counter[tuple[str, str, str]],
     out_dir: Path,
     extra_sections: list[tuple[str, list[str]]] | None = None,
 ) -> tuple[Path, Path]:
@@ -166,6 +172,7 @@ def _write_comparison(
         writer.writerow(
             [
                 "sheet",
+                "category",
                 "tag",
                 "ai_detected_qty",
                 "answer_key_qty",
@@ -174,9 +181,9 @@ def _write_comparison(
                 "status",
             ]
         )
-        for sheet, tag in all_items:
-            ai_qty = detection_sheet_tag[(sheet, tag)]
-            answer_qty = answer_sheet_tag[(sheet, tag)]
+        for category, sheet, tag in all_items:
+            ai_qty = detection_sheet_tag[(category, sheet, tag)]
+            answer_qty = answer_sheet_tag[(category, sheet, tag)]
             delta = ai_qty - answer_qty
             if answer_qty:
                 percent_difference = f"{(delta / answer_qty):.2%}"
@@ -192,7 +199,7 @@ def _write_comparison(
                 status = "AI_MISSING"
             if not ai_qty and not answer_qty:
                 status = "NEEDS_REVIEW"
-            writer.writerow([sheet, tag, ai_qty, answer_qty, delta, percent_difference, status])
+            writer.writerow([sheet, category, tag, ai_qty, answer_qty, delta, percent_difference, status])
 
     detection_tag = _by_tag(detection_sheet_tag)
     answer_tag = _by_tag(answer_sheet_tag)
@@ -211,11 +218,11 @@ def _write_comparison(
         handle.write(f"- AI detections: `{detections_csv}`\n")
         handle.write(f"- Answer key ({answer_key_label}): `{answer_key_path}`\n\n")
         handle.write("## Result\n\n")
-        handle.write(f"- AI detected lighting/fixture quantity: {total_ai}\n")
+        handle.write(f"- AI detected quantity: {total_ai}\n")
         handle.write(f"- Answer-key quantity: {total_answer}\n")
-        handle.write(f"- Sheet/tag rows compared: {len(all_items)}\n")
-        handle.write(f"- Exact sheet/tag quantity matches: {matched_items}\n")
-        handle.write(f"- Sheet/tag rows needing review: {differing_items}\n")
+        handle.write(f"- Category/sheet/tag rows compared: {len(all_items)}\n")
+        handle.write(f"- Exact category/sheet/tag quantity matches: {matched_items}\n")
+        handle.write(f"- Category/sheet/tag rows needing review: {differing_items}\n")
         if comparable:
             denominator = max(1, total_answer)
             score = max(0.0, 1 - (total_abs_error / denominator))
@@ -227,24 +234,24 @@ def _write_comparison(
         if not comparable:
             handle.write("## Important finding\n\n")
             handle.write(
-                "The answer key does not contain enough comparable lighting fixture data for a meaningful accuracy score. "
+                "The answer key does not contain enough comparable symbol-count data for a meaningful accuracy score. "
                 "Use a lighting/fixture-specific LiveCount export, Accubid count report, or human-reviewed sheet count.\n\n"
             )
 
         handle.write("## Biggest differences\n\n")
         differences = sorted(
             (
-                (sheet, tag, detection_sheet_tag[(sheet, tag)], answer_sheet_tag[(sheet, tag)], detection_sheet_tag[(sheet, tag)] - answer_sheet_tag[(sheet, tag)])
-                for sheet, tag in all_items
+                (category, sheet, tag, detection_sheet_tag[(category, sheet, tag)], answer_sheet_tag[(category, sheet, tag)], detection_sheet_tag[(category, sheet, tag)] - answer_sheet_tag[(category, sheet, tag)])
+                for category, sheet, tag in all_items
             ),
-            key=lambda item: abs(item[4]),
+            key=lambda item: abs(item[5]),
             reverse=True,
         )
-        for sheet, tag, ai_qty, answer_qty, delta in differences[:20]:
+        for category, sheet, tag, ai_qty, answer_qty, delta in differences[:20]:
             if delta == 0:
                 continue
-            handle.write(f"- {sheet} / {tag}: AI {ai_qty}, answer key {answer_qty}, delta {delta:+}\n")
-        if not any(delta for _sheet, _tag, _ai, _answer, delta in differences):
+            handle.write(f"- {sheet} / {category} / {tag}: AI {ai_qty}, answer key {answer_qty}, delta {delta:+}\n")
+        if not any(delta for _category, _sheet, _tag, _ai, _answer, delta in differences):
             handle.write("- No differences found.\n")
 
         if extra_sections:

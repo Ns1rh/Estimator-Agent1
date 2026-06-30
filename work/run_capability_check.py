@@ -24,6 +24,7 @@ class CaseResult:
     estimator_missing_rows: int
     quantity_difference: int
     failure_reason: str
+    category_metrics: dict[str, dict[str, int]]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -44,6 +45,35 @@ def _sum_qty(rows: list[dict[str, str]], names: list[str]) -> int:
                     pass
                 break
     return total
+
+
+def _category_qty(rows: list[dict[str, str]], qty_names: list[str]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for row in rows:
+        category = (row.get("category") or "light_fixture").strip().lower().replace(" ", "_")
+        qty = 0
+        for name in qty_names:
+            if row.get(name):
+                try:
+                    qty = int(float(row[name]))
+                except ValueError:
+                    qty = 0
+                break
+        totals[category] = totals.get(category, 0) + qty
+    return totals
+
+
+def _category_metrics(expected_rows: list[dict[str, str]], ai_rows: list[dict[str, str]]) -> dict[str, dict[str, int]]:
+    expected = _category_qty(expected_rows, ["reviewed_quantity"])
+    ai = _category_qty(ai_rows, ["quantity"])
+    metrics: dict[str, dict[str, int]] = {}
+    for category in sorted(set(expected) | set(ai)):
+        metrics[category] = {
+            "expected": expected.get(category, 0),
+            "ai": ai.get(category, 0),
+            "difference": ai.get(category, 0) - expected.get(category, 0),
+        }
+    return metrics
 
 
 def _run(cmd: list[str], cwd: Path) -> tuple[bool, str]:
@@ -72,7 +102,7 @@ def run_case(repo_root: Path, out_dir: Path, seed: int) -> CaseResult:
     )
     if not estimate_ok:
         expected_rows = _read_csv(answer_key)
-        return CaseResult(seed, False, project_dir, package_dir, _sum_qty(expected_rows, ["reviewed_quantity"]), 0, 0, 0, 0, 0, 0, estimate_output[:500])
+        return CaseResult(seed, False, project_dir, package_dir, _sum_qty(expected_rows, ["reviewed_quantity"]), 0, 0, 0, 0, 0, 0, estimate_output[:500], _category_metrics(expected_rows, []))
 
     validation_dir = package_dir / "validation"
     validate_ok, validate_output = _run(
@@ -100,7 +130,7 @@ def run_case(repo_root: Path, out_dir: Path, seed: int) -> CaseResult:
     expected_qty = _sum_qty(expected_rows, ["reviewed_quantity"])
     ai_qty = _sum_qty(ai_rows, ["quantity"])
     failure = "" if validate_ok else validate_output[:500]
-    return CaseResult(seed, validate_ok, project_dir, package_dir, expected_qty, ai_qty, exact, mismatch, ai_missing, estimator_missing, ai_qty - expected_qty, failure)
+    return CaseResult(seed, validate_ok, project_dir, package_dir, expected_qty, ai_qty, exact, mismatch, ai_missing, estimator_missing, ai_qty - expected_qty, failure, _category_metrics(expected_rows, ai_rows))
 
 
 def write_summary(results: list[CaseResult], out_dir: Path) -> tuple[Path, Path]:
@@ -122,21 +152,37 @@ def write_summary(results: list[CaseResult], out_dir: Path) -> tuple[Path, Path]
     total_ai_missing = sum(result.ai_missing_rows for result in results)
     total_estimator_missing = sum(result.estimator_missing_rows for result in results)
     pct_diff = ((total_ai - total_expected) / total_expected) if total_expected else 0
+    category_totals: dict[str, dict[str, int]] = {}
+    for result in results:
+        for category, metrics in result.category_metrics.items():
+            bucket = category_totals.setdefault(category, {"expected": 0, "ai": 0, "difference": 0})
+            bucket["expected"] += metrics.get("expected", 0)
+            bucket["ai"] += metrics.get("ai", 0)
+            bucket["difference"] += metrics.get("difference", 0)
 
     with summary_md.open("w", encoding="utf-8") as handle:
-        handle.write("# Randomized light fixture capability check\n\n")
+        handle.write("# Randomized symbol detection capability check\n\n")
         handle.write("This is a development-only capability check using safe synthetic projects. It is not final bid output.\n\n")
         handle.write("## Summary\n\n")
         handle.write(f"- Cases run: {len(results)}\n")
         handle.write(f"- Cases completed without crashing: {completed}\n")
-        handle.write(f"- Total expected fixture quantity: {total_expected}\n")
-        handle.write(f"- Total AI fixture quantity: {total_ai}\n")
+        handle.write(f"- Total expected quantity: {total_expected}\n")
+        handle.write(f"- Total AI quantity: {total_ai}\n")
         handle.write(f"- Quantity difference: {total_ai - total_expected:+}\n")
         handle.write(f"- Percent difference: {pct_diff:.2%}\n")
         handle.write(f"- Exact match rows: {total_exact}\n")
         handle.write(f"- Mismatched rows: {total_mismatch}\n")
         handle.write(f"- Missing AI rows: {total_ai_missing}\n")
         handle.write(f"- Extra AI rows: {total_estimator_missing}\n\n")
+        if category_totals:
+            handle.write("## Category breakdown\n\n")
+            for category, metrics in sorted(category_totals.items()):
+                expected = metrics["expected"]
+                ai = metrics["ai"]
+                diff = metrics["difference"]
+                pct = (diff / expected) if expected else 0
+                handle.write(f"- {category}: expected {expected}; AI {ai}; diff {diff:+}; percent {pct:.2%}\n")
+            handle.write("\n")
         handle.write("## Cases\n\n")
         for result in results:
             status = "completed" if result.completed else "failed"
