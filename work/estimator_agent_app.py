@@ -11,6 +11,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from PIL import Image, ImageTk
+except Exception:  # pragma: no cover - Tkinter fallback for minimal installs
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+
 
 APP_TITLE = "New Age Electric Estimator Assistant"
 COMPANY_NAME = "New Age Electric LLC"
@@ -91,9 +97,9 @@ class EstimatorAgentApp(tk.Tk):
 
         style.configure("App.TFrame", background="#e9eef4")
         style.configure("Header.TFrame", background="#172536")
-        style.configure("HeaderTitle.TLabel", background="#172536", foreground="#ffffff", font=("Segoe UI", 22, "bold"))
+        style.configure("HeaderTitle.TLabel", background="#172536", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
         style.configure("HeaderSub.TLabel", background="#172536", foreground="#d7e2ee", font=("Segoe UI", 11))
-        style.configure("Logo.TLabel", background="#24384f", foreground="#f2c56b", font=("Segoe UI", 13, "bold"), padding=(12, 8))
+        style.configure("Logo.TLabel", background="#ffffff", foreground="#172536", font=("Segoe UI", 13, "bold"), padding=(12, 8))
         style.configure("Card.TFrame", background="#ffffff", relief="flat")
         style.configure("CardTitle.TLabel", background="#ffffff", foreground="#172536", font=("Segoe UI", 12, "bold"))
         style.configure("Body.TLabel", background="#ffffff", foreground="#253041", font=("Segoe UI", 10))
@@ -116,8 +122,8 @@ class EstimatorAgentApp(tk.Tk):
         header.columnconfigure(1, weight=1)
 
         logo_widget = self._logo_widget(header)
-        logo_widget.grid(row=0, column=0, rowspan=3, sticky="w", padx=(0, 16))
-        ttk.Label(header, text=COMPANY_NAME, style="HeaderTitle.TLabel").grid(row=0, column=1, sticky="w")
+        logo_widget.grid(row=0, column=0, rowspan=3, sticky="w", padx=(0, 22))
+        ttk.Label(header, text="Estimator Assistant", style="HeaderTitle.TLabel").grid(row=0, column=1, sticky="w")
         ttk.Label(header, text=SUBHEADER, style="HeaderSub.TLabel").grid(row=1, column=1, sticky="w", pady=(3, 0))
         ttk.Label(header, text=LOCATION, style="HeaderSub.TLabel").grid(row=2, column=1, sticky="w", pady=(3, 0))
 
@@ -152,14 +158,29 @@ class EstimatorAgentApp(tk.Tk):
         ]:
             if logo_path.exists():
                 try:
-                    image = tk.PhotoImage(file=str(logo_path))
-                    while image.width() > 160 or image.height() > 90:
-                        image = image.subsample(2, 2)
+                    image = self._load_logo_image(logo_path, max_width=320, max_height=112)
                     self.logo_image = image
-                    return ttk.Label(parent, image=self.logo_image, style="Logo.TLabel")
+                    return ttk.Label(parent, image=self.logo_image, style="Logo.TLabel", anchor="center")
                 except tk.TclError:
                     break
         return ttk.Label(parent, text="NEW AGE\nELECTRIC LLC", style="Logo.TLabel", anchor="center", justify="center")
+
+    def _load_logo_image(self, logo_path: Path, max_width: int, max_height: int) -> tk.PhotoImage:
+        """Load the approved local logo with smooth scaling.
+
+        Tk's native PhotoImage.subsample only scales by whole numbers, which
+        makes letter-heavy logos look jagged. Pillow is already used by the
+        estimator for drawing markup, so use it here when available.
+        """
+        if Image is not None and ImageTk is not None:
+            source = Image.open(logo_path).convert("RGBA")
+            source.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(source)
+
+        image = tk.PhotoImage(file=str(logo_path))
+        while image.width() > max_width or image.height() > max_height:
+            image = image.subsample(2, 2)
+        return image
 
     def _card(self, parent: ttk.Frame, title: str) -> ttk.Frame:
         outer = ttk.Frame(parent, style="Card.TFrame", padding=(14, 12))
