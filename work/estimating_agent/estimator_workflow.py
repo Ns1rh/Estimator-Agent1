@@ -417,15 +417,15 @@ def run_estimator_workflow(
             _copy_if_exists(detected_takeoff, takeoff_items)
             _copy_if_exists(detected_review, estimator_review)
             _copy_if_exists(symbol_dir / "marked_up_drawings.pdf", marked_up_drawings)
-            steps.append(("symbol_detection_light_fixtures", "done", str(symbol_summary)))
+            steps.append(("symbol_detection_supported_categories", "done", str(symbol_summary)))
         else:
             _write_empty_takeoff(takeoff_items)
             _write_empty_review(estimator_review)
-            steps.append(("symbol_detection_light_fixtures", "skipped: no rendered sheets", ""))
+            steps.append(("symbol_detection_supported_categories", "skipped: no rendered sheets", ""))
     except Exception as exc:
         _write_empty_takeoff(takeoff_items)
         _write_empty_review(estimator_review)
-        steps.append(("symbol_detection_light_fixtures", f"failed: {exc}", ""))
+        steps.append(("symbol_detection_supported_categories", f"failed: {exc}", ""))
 
     if not takeoff_items.exists():
         _write_empty_takeoff(takeoff_items)
@@ -441,11 +441,11 @@ def run_estimator_workflow(
         if takeoff_items.exists() and _read_csv(takeoff_items):
             schedule_summary, schedule_entries = write_fixture_schedule_outputs(project_folder, takeoff_items, schedule_dir)
             schedule_matches = _enrich_takeoff_with_fixture_schedule(takeoff_items, schedule_entries)
-            steps.append(("schedule_understanding_light_fixtures", f"done: matched {schedule_matches} takeoff rows to schedule entries", str(schedule_summary)))
+            steps.append(("schedule_understanding", f"done: matched {schedule_matches} takeoff rows to schedule entries", str(schedule_summary)))
         else:
-            steps.append(("schedule_understanding_light_fixtures", "skipped: no takeoff items", ""))
+            steps.append(("schedule_understanding", "skipped: no takeoff items", ""))
     except Exception as exc:
-        steps.append(("schedule_understanding_light_fixtures", f"failed: {exc}", ""))
+        steps.append(("schedule_understanding", f"failed: {exc}", ""))
 
     selected_sheet_rows = selected_sheet_rows if "selected_sheet_rows" in locals() else []
     _normalize_estimator_outputs(
@@ -471,9 +471,14 @@ def run_estimator_workflow(
     review_required = sum(1 for row in takeoff_rows if (row.get("review_status") or "").upper() in {"NEEDS_REVIEW", "MISMATCH", ""})
     schedule_matched_rows = sum(1 for row in takeoff_rows if row.get("schedule_description"))
     review_category_counts: dict[str, int] = {}
+    category_quantities: dict[str, int] = {}
     for row in takeoff_rows:
         category = row.get("category") or "LIGHT FIXTURE"
         review_category_counts[category] = review_category_counts.get(category, 0) + 1
+        try:
+            category_quantities[category] = category_quantities.get(category, 0) + int(float(row.get("quantity") or 0))
+        except ValueError:
+            category_quantities[category] = category_quantities.get(category, 0)
     total_fixture_qty = 0
     for row in takeoff_rows:
         try:
@@ -486,15 +491,28 @@ def run_estimator_workflow(
     schedule_tags = {row.get("tag", "") for row in schedule_entries if row.get("tag")}
     tags_missing_schedule = sorted(tag for tag in plan_tags if tag and tag not in schedule_tags)
     schedule_tags_not_on_plans = sorted(tag for tag in schedule_tags if tag and tag not in plan_tags)
+    lighting_sheets = [row for row in selected_sheet_rows if (row.get("discipline") or "").lower() == "lighting"]
+    fire_alarm_sheets = [row for row in selected_sheet_rows if (row.get("discipline") or "").lower() == "fire_alarm"]
+    other_selected_sheets = [row for row in selected_sheet_rows if row not in lighting_sheets and row not in fire_alarm_sheets]
+    marked_status = "created" if marked_up_drawings.exists() else "not created"
+    validation_dir = out_dir / "validation"
+    validation_status = "not run yet; use the validation answer key after estimator review"
+    if (validation_dir / "SYMBOL_DETECTION_VALIDATION.md").exists():
+        validation_status = f"available in `{validation_dir}`"
 
     with project_dashboard.open("w", encoding="utf-8") as handle:
         handle.write(f"# Estimator coworker dashboard - {project_name}\n\n")
-        handle.write("This is a first-pass estimator review package, not final bid output.\n\n")
-        handle.write("Use this dashboard plus the estimator files below to review the first-pass electrical takeoff.\n\n")
+        handle.write("This is first-pass estimator review output, not final bid output.\n\n")
+        handle.write("The agent scanned a project folder, selected likely electrical plan sheets, produced candidate counts, marked the drawings, and prepared review CSVs for an estimator to check.\n\n")
+        handle.write("## Supported first-pass categories\n\n")
+        handle.write("- light_fixture\n")
+        handle.write("- exit_sign\n")
+        handle.write("- emergency_light\n")
+        handle.write("- fire_alarm_device\n\n")
         handle.write("## Primary outputs\n\n")
         handle.write(f"- `takeoff_items.csv` - detected/countable items for estimator review\n")
         handle.write(f"- `estimator_review.csv` - item-level evidence and review flags\n")
-        handle.write(f"- `accubid_mapping.csv` - placeholder mapping from takeoff items to Accubid items/assemblies\n")
+        handle.write(f"- `accubid_mapping.csv` - mapping template only; it does not price work\n")
         handle.write(f"- `marked_up_drawings.pdf` - visual markup when rendered sheets were available\n")
         handle.write(f"- `validation_answer_key_template.csv` - fill/export reviewed quantities here to score the agent\n")
         handle.write(f"- `project_dashboard.md` - this dashboard\n\n")
@@ -519,20 +537,42 @@ def run_estimator_workflow(
         handle.write(f"- Total first-pass detected quantity: {total_fixture_qty}\n")
         handle.write(f"- Takeoff rows matched to schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
+        handle.write("## Markup and validation status\n\n")
+        handle.write(f"- Marked drawing PDF: {marked_status} (`marked_up_drawings.pdf`)\n")
+        handle.write(f"- Validation status: {validation_status}\n\n")
+
         if review_category_counts:
-            handle.write("### Detected categories\n\n")
-            handle.write("These categories help the estimator decide what to review first. They do not make quantities final.\n\n")
+            handle.write("## Quantities by category\n\n")
             for category, count in sorted(review_category_counts.items()):
-                handle.write(f"- {category}: {count} takeoff rows\n")
+                handle.write(f"- {category}: {category_quantities.get(category, 0)} detected quantity across {count} takeoff row(s)\n")
             handle.write("\n")
 
         if selected_sheet_rows:
-            handle.write("### Sheets used for this run\n\n")
-            for row in selected_sheet_rows:
-                handle.write(
-                    f"- {row.get('sheet_number', '')} {row.get('sheet_title', '')} "
-                    f"({row.get('discipline', '')}, confidence {row.get('confidence', '')})\n"
-                )
+            handle.write("## Sheets used for this run\n\n")
+            if lighting_sheets:
+                handle.write("### Selected lighting sheets\n\n")
+                for row in lighting_sheets:
+                    handle.write(
+                        f"- {row.get('sheet_number', '')} {row.get('sheet_title', '')} "
+                        f"(confidence {row.get('confidence', '')})\n"
+                    )
+                handle.write("\n")
+            if fire_alarm_sheets:
+                handle.write("### Selected fire alarm sheets\n\n")
+                for row in fire_alarm_sheets:
+                    handle.write(
+                        f"- {row.get('sheet_number', '')} {row.get('sheet_title', '')} "
+                        f"(confidence {row.get('confidence', '')})\n"
+                    )
+                handle.write("\n")
+            if other_selected_sheets:
+                handle.write("### Other selected electrical sheets\n\n")
+                for row in other_selected_sheets:
+                    handle.write(
+                        f"- {row.get('sheet_number', '')} {row.get('sheet_title', '')} "
+                        f"({row.get('discipline', '')}, confidence {row.get('confidence', '')})\n"
+                    )
+                handle.write("\n")
             handle.write("\n")
         elif sheet_rows:
             handle.write("### First electrical sheet candidates\n\n")
@@ -544,7 +584,7 @@ def run_estimator_workflow(
             handle.write("\n")
 
         if takeoff_rows:
-            handle.write("### Counts by category/tag\n\n")
+            handle.write("## Tag counts by category\n\n")
             tag_counts: dict[tuple[str, str], int] = {}
             for row in takeoff_rows:
                 try:
@@ -556,7 +596,7 @@ def run_estimator_workflow(
             for (category, tag), qty in sorted(tag_counts.items()):
                 if tag:
                     handle.write(f"- {category} / {tag}: {qty}\n")
-            handle.write("\n### First takeoff item candidates\n\n")
+            handle.write("\n## First takeoff item candidates\n\n")
             for row in takeoff_rows[:15]:
                 handle.write(
                     f"- {row.get('sheet_number', '')}: {row.get('tag', '')} x {row.get('quantity', '')} "
@@ -567,7 +607,8 @@ def run_estimator_workflow(
             handle.write("\nThese are candidate counts for estimator review, not final bid quantities.\n")
             handle.write("\n")
 
-            handle.write("### Schedule cross-checks\n\n")
+            handle.write("## Schedule or legend matches\n\n")
+            handle.write(f"- Rows with schedule/legend description matches: {schedule_matched_rows}\n")
             if tags_missing_schedule:
                 handle.write("Plan tags missing from schedule match:\n")
                 for tag in tags_missing_schedule[:30]:
@@ -580,12 +621,19 @@ def run_estimator_workflow(
                     handle.write(f"- {tag}\n")
             handle.write("\n")
 
-        handle.write("## Estimator next action\n\n")
+        handle.write("## Limitations\n\n")
+        handle.write("- Real drawings may be harder than the safe synthetic demo drawings.\n")
+        handle.write("- Scanned PDFs may require OCR before the agent can read labels reliably.\n")
+        handle.write("- Unusual title blocks, dense legends, or crowded notes can still cause missed counts.\n")
+        handle.write("- Quantities require estimator review before they are used for a bid.\n")
+        handle.write("- Current scope does not include receptacles, switches, panels, feeders, conduit, or pricing.\n\n")
+
+        handle.write("## Recommended estimator review steps\n\n")
         if takeoff_rows:
             handle.write("1. Review `takeoff_items.csv` and `marked_up_drawings.pdf`.\n")
             handle.write("2. Confirm any schedule descriptions that were automatically attached.\n")
             handle.write("3. Fill `validation_answer_key_template.csv` with reviewed quantities from LiveCount, Accubid, or manual check.\n")
-            handle.write("4. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies.\n")
+            handle.write("4. Fill `accubid_mapping.csv` for items that should become Accubid items/assemblies. This is a mapping template, not pricing.\n")
         else:
             handle.write("This run did not produce symbol detections. Check whether the project folder contains searchable drawing PDFs and whether lighting/electrical plan sheets were selected under `_internal/02_drawing_intelligence/focused_sheet_index.csv`.\n")
         handle.write("\n## How to validate this run\n\n")
