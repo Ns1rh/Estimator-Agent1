@@ -20,12 +20,20 @@ outputs/intake-packets/
 outputs/estimator-package/
 outputs/capability-check/
 outputs/capability-check-holdout/
+outputs/company-pilot/
+outputs/company-pilot-batch/
 samples/
+company_data/
+company_projects/
+EstimatorAgentData/
+C/EstimatorAgentData/
 
 # Real estimating/project data - DO NOT COMMIT
 *.pdf
 *.tpx
 *.tlc
+*.lct
+*.lcx
 *.es15
 *.es16
 *.est
@@ -43,6 +51,14 @@ samples/
 *.tif
 *.tiff
 *.zip
+*LiveCount*export*
+*livecount*export*
+*Accubid*export*
+*accubid*export*
+*pricing*
+*Pricing*
+*marked*real*drawing*
+*marked*real*drawings*
 
 # Allow launcher/source docs if explicitly needed
 !outputs/agent-launcher/

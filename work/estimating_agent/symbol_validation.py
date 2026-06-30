@@ -21,6 +21,8 @@ LIGHTING_WORDS = {
     "EMERGENCY",
     "EXIT",
 }
+ALL_SHEETS = "__ALL_SHEETS__"
+ALL_TAGS = "__ALL_TAGS__"
 
 
 def _normalize_sheet(value: str) -> str:
@@ -61,7 +63,7 @@ def _detection_counts(path: Path) -> Counter[tuple[str, str, str]]:
                 qty = int(float(row.get("quantity", "") or 1))
             except ValueError:
                 qty = 1
-            if sheet and tag:
+            if category and sheet and tag:
                 counts[(category, sheet, tag)] += qty
     return counts
 
@@ -138,19 +140,56 @@ def _answer_key_counts(path: Path) -> Counter[tuple[str, str, str]]:
         for row in reader:
             sheet = _normalize_sheet(
                 _first_present(row, ["sheet", "drawing", "sheet_number", "drawing_number"])
-            )
+            ) or ALL_SHEETS
             category = _normalize_category(_first_present(row, ["category", "item_category"]))
             tag = _normalize_tag(
                 _first_present(row, ["tag", "item", "fixture", "fixture_type", "symbol", "description"])
-            )
+            ) or ALL_TAGS
             qty_text = _first_present(row, ["reviewed_quantity", "estimator_quantity", "quantity", "qty", "count", "answer_key_qty"])
             try:
                 qty = int(float(qty_text or "1"))
             except ValueError:
                 continue
-            if sheet and tag:
+            if category and sheet and tag:
                 counts[(category, sheet, tag)] += qty
     return counts
+
+
+def _detection_counts_for_answer_granularity(
+    detection_counts: Counter[tuple[str, str, str]],
+    answer_counts: Counter[tuple[str, str, str]],
+) -> Counter[tuple[str, str, str]]:
+    """Aggregate AI detections to match coarse answer-key rows when needed.
+
+    Real reviewed exports are not always sheet/tag perfect. If an answer key
+    supplies only category-level totals, compare AI at category level instead
+    of crashing or inventing sheet/tag detail.
+    """
+    if not answer_counts:
+        return detection_counts
+
+    aligned: Counter[tuple[str, str, str]] = Counter()
+    covered_detection_keys: set[tuple[str, str, str]] = set()
+
+    for category, answer_sheet, answer_tag in answer_counts:
+        if answer_sheet == ALL_SHEETS or answer_tag == ALL_TAGS:
+            total = 0
+            for det_key, qty in detection_counts.items():
+                det_category, det_sheet, det_tag = det_key
+                if det_category != category:
+                    continue
+                if answer_sheet != ALL_SHEETS and det_sheet != answer_sheet:
+                    continue
+                if answer_tag != ALL_TAGS and det_tag != answer_tag:
+                    continue
+                total += qty
+                covered_detection_keys.add(det_key)
+            aligned[(category, answer_sheet, answer_tag)] = total
+
+    for det_key, qty in detection_counts.items():
+        if det_key not in covered_detection_keys:
+            aligned[det_key] += qty
+    return aligned
 
 
 def _write_comparison(
@@ -199,7 +238,9 @@ def _write_comparison(
                 status = "AI_MISSING"
             if not ai_qty and not answer_qty:
                 status = "NEEDS_REVIEW"
-            writer.writerow([sheet, category, tag, ai_qty, answer_qty, delta, percent_difference, status])
+            sheet_label = "ALL_SHEETS" if sheet == ALL_SHEETS else sheet
+            tag_label = "ALL_TAGS" if tag == ALL_TAGS else tag
+            writer.writerow([sheet_label, category, tag_label, ai_qty, answer_qty, delta, percent_difference, status])
 
     detection_tag = _by_tag(detection_sheet_tag)
     answer_tag = _by_tag(answer_sheet_tag)
@@ -250,7 +291,9 @@ def _write_comparison(
         for category, sheet, tag, ai_qty, answer_qty, delta in differences[:20]:
             if delta == 0:
                 continue
-            handle.write(f"- {sheet} / {category} / {tag}: AI {ai_qty}, answer key {answer_qty}, delta {delta:+}\n")
+            sheet_label = "ALL_SHEETS" if sheet == ALL_SHEETS else sheet
+            tag_label = "ALL_TAGS" if tag == ALL_TAGS else tag
+            handle.write(f"- {sheet_label} / {category} / {tag_label}: AI {ai_qty}, answer key {answer_qty}, delta {delta:+}\n")
         if not any(delta for _category, _sheet, _tag, _ai, _answer, delta in differences):
             handle.write("- No differences found.\n")
 
@@ -267,8 +310,11 @@ def _write_comparison(
 
 
 def validate_symbol_detections_against_counts_csv(detections_csv: Path, answer_key_csv: Path, out_dir: Path) -> tuple[Path, Path]:
-    detection_sheet_tag = _detection_counts(detections_csv)
     answer_sheet_tag = _answer_key_counts(answer_key_csv)
+    detection_sheet_tag = _detection_counts_for_answer_granularity(
+        _detection_counts(detections_csv),
+        answer_sheet_tag,
+    )
     return _write_comparison(
         detections_csv=detections_csv,
         answer_key_path=answer_key_csv,

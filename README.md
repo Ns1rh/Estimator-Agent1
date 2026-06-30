@@ -42,7 +42,7 @@ This creates one estimator review package:
 
 ## Current capability
 
-The current useful workflow is light-fixture focused:
+The current useful workflow is a first-pass multi-scope review package:
 
 - finds likely lighting/electrical plan sheets
 - renders selected sheets
@@ -52,6 +52,32 @@ The current useful workflow is light-fixture focused:
 - produces an Accubid-ready mapping template for estimator review
 
 All quantities are marked for estimator review. This is not final bid output yet.
+
+## Private company pilot
+
+Safe synthetic projects are for presentation and public/demo testing. Real validation should happen privately against completed reviewed company projects stored outside this repo.
+
+Recommended private root:
+
+```text
+C:\EstimatorAgentData\company_projects
+```
+
+Single-project pilot:
+
+```powershell
+python work\run_company_pilot.py --project-dir "C:\EstimatorAgentData\company_projects\PROJECT_ID" --out-dir "C:\EstimatorAgentData\outputs\PROJECT_ID"
+```
+
+Batch pilot:
+
+```powershell
+python work\run_company_pilot_batch.py --projects-root "C:\EstimatorAgentData\company_projects" --out-dir "C:\EstimatorAgentData\outputs\company-pilot-batch"
+```
+
+Company pilot inputs and reviewed answer keys stay local. Reviewed quantities are used only after `estimate-project` finishes, during validation/comparison.
+
+See `docs\COMPANY_PILOT.md`.
 
 ## Validation command
 
@@ -80,7 +106,7 @@ The randomized check helps show whether the tool works beyond one fixed drawing.
 
 ## Important safety rule
 
-Do not commit company project data.
+Do not commit company project data or company pilot outputs.
 
 Keep these out of Git:
 

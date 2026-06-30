@@ -15,6 +15,16 @@ This is first-pass estimator review output, not final bid output.
 
 The current scope does not include receptacles, switches, panels, feeders, conduit, or pricing.
 
+## Safe demo vs private company pilot
+
+The synthetic demo is safe for presentation because it uses generated drawings and generated answer keys.
+
+The randomized capability check tests whether the workflow generalizes beyond one fixed synthetic drawing.
+
+The company pilot workflow tests real completed jobs privately. Company files and reviewed past bids should stay outside this repo, for example under `C:\EstimatorAgentData`. Reviewed quantities are used only after `estimate-project` runs, during validation/comparison.
+
+See `docs\COMPANY_PILOT.md` for the private workflow.
+
 ## What the project currently does
 
 The main command:
@@ -155,4 +165,5 @@ These are honest development metrics on safe synthetic projects. They do not pro
 2. Add OCR support for scanned PDFs.
 3. Improve schedule and legend matching for lighting and fire alarm devices.
 4. Add the next estimator-value category only after current categories are reliable.
-5. Continue preparing clean outputs that can support LiveCount and Accubid workflows without replacing those tools.
+5. Use private company pilot results from completed reviewed projects to guide improvements.
+6. Continue preparing clean outputs that can support LiveCount and Accubid workflows without replacing those tools.
