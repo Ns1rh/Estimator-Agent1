@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
+import shutil
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from work.estimating_agent.project_intake import (
     SHEET_INDEX_WORDS,
     find_pdf_candidates,
     normalize_sheet_number,
+    sheet_list_hits_from_text,
 )
 
 
@@ -324,8 +326,8 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
     temp_dir = out_dir / "_render_tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[Path] = []
-    pdftoppm = Path(r"C:\Users\namid\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin\pdftoppm.exe")
-    if not pdftoppm.exists():
+    pdftoppm = _find_pdftoppm()
+    if not pdftoppm:
         return rendered
 
     seen_pages: set[tuple[str, int]] = set()
@@ -360,6 +362,22 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
         matches = sorted(render_dir.glob(f"{prefix.name}-*.png"))
         rendered.extend(matches)
     return rendered
+
+
+def _find_pdftoppm() -> Path | None:
+    """Find Poppler without hardcoding one machine path."""
+    candidates = [
+        Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "native" / "poppler" / "Library" / "bin" / "pdftoppm.exe",
+        Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "native" / "poppler" / "bin" / "pdftoppm.exe",
+        Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "bin" / "pdftoppm.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    from_path = shutil.which("pdftoppm.exe") or shutil.which("pdftoppm")
+    if from_path:
+        return Path(from_path)
+    return None
 
 
 def write_drawing_intelligence_outputs(

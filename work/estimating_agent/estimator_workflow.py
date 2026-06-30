@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from reportlab.pdfgen import canvas
@@ -25,7 +26,7 @@ class EstimatorWorkflowResult:
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
+    if not path or not str(path) or path.is_dir() or not path.exists():
         return []
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
@@ -37,16 +38,18 @@ def _write_empty_takeoff(path: Path) -> None:
         writer.writerow(
             [
                 "item",
-                "quantity",
-                "sheet",
-                "location",
-                "confidence",
-                "reason",
-                "review_category",
+                "project_name",
+                "source_file",
+                "sheet_number",
+                "sheet_name",
+                "category",
+                "tag",
                 "schedule_description",
-                "schedule_confidence",
-                "schedule_source",
-                "review_required",
+                "quantity",
+                "confidence",
+                "review_status",
+                "evidence",
+                "notes",
             ]
         )
 
@@ -54,7 +57,7 @@ def _write_empty_takeoff(path: Path) -> None:
 def _write_empty_review(path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sheet", "item", "quantity", "confidence", "reason", "review_category", "review_required", "review_note"])
+        writer.writerow(["sheet_number", "sheet_name", "category", "tag", "detected_quantity", "schedule_description", "review_status", "evidence", "notes"])
 
 
 def _write_csv_rows(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
@@ -70,26 +73,24 @@ def _write_accubid_mapping_template(takeoff_items: Path, out_path: Path) -> None
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "sheet",
-                "takeoff_item",
+                "category",
+                "tag",
+                "schedule_description",
                 "quantity",
-                "fixture_schedule_description",
-                "suggested_accubid_item",
-                "suggested_accubid_assembly",
-                "mapping_status",
-                "estimator_note",
+                "accubid_item_placeholder",
+                "accubid_assembly_placeholder",
+                "estimator_notes",
             ]
         )
         for row in rows:
             writer.writerow(
                 [
-                    row.get("sheet", ""),
-                    row.get("item", ""),
-                    row.get("quantity", ""),
+                    row.get("category", "LIGHT FIXTURE"),
+                    row.get("tag", _tag_from_takeoff_item(row.get("item", ""))),
                     row.get("schedule_description", ""),
+                    row.get("quantity", ""),
                     "",
                     "",
-                    "needs_estimator_mapping",
                     "",
                 ]
             )
@@ -158,6 +159,7 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
         writer.writerow(
             [
                 "sheet",
+                "sheet_number",
                 "tag",
                 "ai_quantity",
                 "reviewed_quantity",
@@ -170,7 +172,8 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
             writer.writerow(
                 [
                     row.get("sheet", ""),
-                    _tag_from_takeoff_item(row.get("item", "")),
+                    row.get("sheet_number", row.get("sheet", "")),
+                    row.get("tag", _tag_from_takeoff_item(row.get("item", ""))),
                     row.get("quantity", ""),
                     "",
                     "",
@@ -178,6 +181,76 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
                     "",
                 ]
             )
+
+
+def _sheet_lookup(selected_sheet_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    return {(row.get("sheet_number") or "").upper(): row for row in selected_sheet_rows}
+
+
+def _normalize_estimator_outputs(
+    *,
+    project_name: str,
+    takeoff_items: Path,
+    estimator_review: Path,
+    selected_sheet_rows: list[dict[str, str]],
+) -> None:
+    rows = _read_csv(takeoff_items)
+    if not rows:
+        _write_empty_takeoff(takeoff_items)
+        _write_empty_review(estimator_review)
+        return
+
+    sheets = _sheet_lookup(selected_sheet_rows)
+    normalized: list[dict[str, str]] = []
+    review_rows: list[dict[str, str]] = []
+    for row in rows:
+        sheet_number = row.get("sheet_number") or row.get("sheet") or ""
+        sheet_info = sheets.get(sheet_number.upper(), {})
+        tag = row.get("tag") or _tag_from_takeoff_item(row.get("item", ""))
+        category = row.get("category") or "LIGHT FIXTURE"
+        schedule_description = row.get("schedule_description", "")
+        evidence_bits = [
+            row.get("reason", ""),
+            row.get("location", ""),
+            row.get("schedule_source", ""),
+        ]
+        evidence = "; ".join(bit for bit in evidence_bits if bit)
+        notes = "First-pass AI quantity; estimator must review."
+        if not schedule_description and tag:
+            notes += " Fixture tag not matched to schedule."
+        normalized_row = {
+            "project_name": project_name,
+            "source_file": row.get("source_file") or sheet_info.get("pdf", ""),
+            "sheet_number": sheet_number,
+            "sheet_name": row.get("sheet_name") or sheet_info.get("sheet_title", ""),
+            "category": category,
+            "tag": tag,
+            "schedule_description": schedule_description,
+            "quantity": row.get("quantity", ""),
+            "confidence": row.get("confidence", ""),
+            "review_status": "NEEDS_REVIEW",
+            "evidence": evidence,
+            "notes": notes,
+        }
+        normalized.append(normalized_row)
+        review_rows.append(
+            {
+                "sheet_number": normalized_row["sheet_number"],
+                "sheet_name": normalized_row["sheet_name"],
+                "category": category,
+                "tag": tag,
+                "detected_quantity": normalized_row["quantity"],
+                "schedule_description": schedule_description,
+                "review_status": "NEEDS_REVIEW",
+                "evidence": evidence,
+                "notes": notes,
+            }
+        )
+
+    takeoff_fields = ["project_name", "source_file", "sheet_number", "sheet_name", "category", "tag", "schedule_description", "quantity", "confidence", "review_status", "evidence", "notes"]
+    review_fields = ["sheet_number", "sheet_name", "category", "tag", "detected_quantity", "schedule_description", "review_status", "evidence", "notes"]
+    _write_csv_rows(takeoff_items, normalized, takeoff_fields)
+    _write_csv_rows(estimator_review, review_rows, review_fields)
 
 
 PLAN_WORDS = ("PLAN", "LIGHTING", "POWER", "ELECTRICAL", "FLOOR", "LEVEL")
@@ -366,6 +439,13 @@ def run_estimator_workflow(
     except Exception as exc:
         steps.append(("schedule_understanding_light_fixtures", f"failed: {exc}", ""))
 
+    selected_sheet_rows = selected_sheet_rows if "selected_sheet_rows" in locals() else []
+    _normalize_estimator_outputs(
+        project_name=project_name,
+        takeoff_items=takeoff_items,
+        estimator_review=estimator_review,
+        selected_sheet_rows=selected_sheet_rows,
+    )
     _write_accubid_mapping_template(takeoff_items, accubid_mapping)
     _write_validation_answer_key_template(takeoff_items, validation_answer_key)
 
@@ -378,17 +458,29 @@ def run_estimator_workflow(
     sheet_rows = _read_csv(sheet_index_csv) if sheet_index_csv and sheet_index_csv.exists() else []
     page_rows = _read_csv(sheet_page_map) if sheet_page_map and sheet_page_map.exists() else []
     takeoff_rows = _read_csv(takeoff_items)
-    review_required = sum(1 for row in takeoff_rows if (row.get("review_required") or "").lower() in {"yes", "true", "1"})
+    review_required = sum(1 for row in takeoff_rows if (row.get("review_status") or "").upper() in {"NEEDS_REVIEW", "MISMATCH", ""})
     schedule_matched_rows = sum(1 for row in takeoff_rows if row.get("schedule_description"))
     review_category_counts: dict[str, int] = {}
     for row in takeoff_rows:
-        category = row.get("review_category") or "uncategorized"
+        category = row.get("category") or "LIGHT FIXTURE"
         review_category_counts[category] = review_category_counts.get(category, 0) + 1
-    selected_sheet_rows = selected_sheet_rows if "selected_sheet_rows" in locals() else []
+    total_fixture_qty = 0
+    for row in takeoff_rows:
+        try:
+            total_fixture_qty += int(float(row.get("quantity") or 0))
+        except ValueError:
+            pass
+    plan_tags = {row.get("tag", "") for row in takeoff_rows if row.get("tag")}
+    schedule_entries_path = out_dir / "_internal" / "04_schedule_understanding" / "fixture_schedule_entries.csv"
+    schedule_entries = _read_csv(schedule_entries_path)
+    schedule_tags = {row.get("tag", "") for row in schedule_entries if row.get("tag")}
+    tags_missing_schedule = sorted(tag for tag in plan_tags if tag and tag not in schedule_tags)
+    schedule_tags_not_on_plans = sorted(tag for tag in schedule_tags if tag and tag not in plan_tags)
 
     with project_dashboard.open("w", encoding="utf-8") as handle:
         handle.write(f"# Estimator coworker dashboard - {project_name}\n\n")
-        handle.write("This is the main estimator-agent workflow output. It is intentionally small: use this dashboard plus the estimator files below.\n\n")
+        handle.write("This is a first-pass estimator review package, not final bid output.\n\n")
+        handle.write("Use this dashboard plus the estimator files below to review the light fixture takeoff.\n\n")
         handle.write("## Primary outputs\n\n")
         handle.write(f"- `takeoff_items.csv` - detected/countable items for estimator review\n")
         handle.write(f"- `estimator_review.csv` - item-level evidence and review flags\n")
@@ -407,10 +499,13 @@ def run_estimator_workflow(
 
         handle.write("## What the agent found\n\n")
         handle.write(f"- Project scanned: `{project_folder}`\n")
+        handle.write(f"- Run timestamp: {datetime.now().isoformat(timespec='seconds')}\n")
+        handle.write(f"- PDFs scanned/classified: {len(_read_csv(project_files_csv)) if project_files_csv and project_files_csv.exists() else 0}\n")
         handle.write(f"- Electrical sheet candidates from intake: {len(sheet_rows)}\n")
         handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
+        handle.write(f"- Total first-pass light fixture quantity: {total_fixture_qty}\n")
         handle.write(f"- Takeoff rows matched to fixture schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
         if review_category_counts:
@@ -438,15 +533,38 @@ def run_estimator_workflow(
             handle.write("\n")
 
         if takeoff_rows:
-            handle.write("### First takeoff item candidates\n\n")
+            handle.write("### Counts by fixture tag\n\n")
+            tag_counts: dict[str, int] = {}
+            for row in takeoff_rows:
+                try:
+                    tag_counts[row.get("tag", "")] = tag_counts.get(row.get("tag", ""), 0) + int(float(row.get("quantity") or 0))
+                except ValueError:
+                    tag_counts[row.get("tag", "")] = tag_counts.get(row.get("tag", ""), 0)
+            for tag, qty in sorted(tag_counts.items()):
+                if tag:
+                    handle.write(f"- {tag}: {qty}\n")
+            handle.write("\n### First takeoff item candidates\n\n")
             for row in takeoff_rows[:15]:
                 handle.write(
-                    f"- {row.get('sheet', '')}: {row.get('item', '')} x {row.get('quantity', '')} "
-                    f"(confidence {row.get('confidence', '')}, category {row.get('review_category', '')}, review {row.get('review_required', '')})\n"
+                    f"- {row.get('sheet_number', '')}: {row.get('tag', '')} x {row.get('quantity', '')} "
+                    f"(confidence {row.get('confidence', '')}, review {row.get('review_status', '')})\n"
                 )
                 if row.get("schedule_description"):
                     handle.write(f"  - Schedule: {row.get('schedule_description', '')[:180]}\n")
             handle.write("\nThese are candidate counts for estimator review, not final bid quantities.\n")
+            handle.write("\n")
+
+            handle.write("### Schedule cross-checks\n\n")
+            if tags_missing_schedule:
+                handle.write("Plan tags missing from fixture schedule match:\n")
+                for tag in tags_missing_schedule[:30]:
+                    handle.write(f"- {tag}\n")
+            else:
+                handle.write("- No detected plan tags are missing from the matched fixture schedule.\n")
+            if schedule_tags_not_on_plans:
+                handle.write("\nSchedule tags not found on selected plan sheets:\n")
+                for tag in schedule_tags_not_on_plans[:30]:
+                    handle.write(f"- {tag}\n")
             handle.write("\n")
 
         handle.write("## Estimator next action\n\n")

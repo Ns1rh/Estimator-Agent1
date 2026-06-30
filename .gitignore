@@ -17,6 +17,8 @@ outputs/controlled-livecount-browser/
 outputs/database-prep/
 outputs/training-set/
 outputs/intake-packets/
+outputs/estimator-package/
+samples/
 
 # Real estimating/project data - DO NOT COMMIT
 *.pdf
@@ -38,6 +40,7 @@ outputs/intake-packets/
 *.jpeg
 *.tif
 *.tiff
+*.zip
 
 # Allow launcher/source docs if explicitly needed
 !outputs/agent-launcher/
@@ -60,4 +63,3 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
-

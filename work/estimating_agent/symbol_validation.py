@@ -32,6 +32,8 @@ def _normalize_tag(value: str) -> str:
 
 
 def _tag_from_detection_row(row: dict[str, str]) -> str:
+    if row.get("tag"):
+        return _normalize_tag(row.get("tag", ""))
     item = row.get("item", "")
     symbol_type = row.get("symbol_type", "")
     match = TAG_FROM_DETECTION_ITEM.search(item)
@@ -48,7 +50,7 @@ def _detection_counts(path: Path) -> Counter[tuple[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            sheet = _normalize_sheet(row.get("sheet", ""))
+            sheet = _normalize_sheet(_first_present(row, ["sheet_number", "sheet", "drawing", "drawing_number"]))
             tag = _tag_from_detection_row(row)
             try:
                 qty = int(float(row.get("quantity", "") or 1))
@@ -135,11 +137,11 @@ def _answer_key_counts(path: Path) -> Counter[tuple[str, str]]:
             tag = _normalize_tag(
                 _first_present(row, ["tag", "item", "fixture", "fixture_type", "symbol", "description"])
             )
-            qty_text = _first_present(row, ["quantity", "qty", "count"])
+            qty_text = _first_present(row, ["reviewed_quantity", "estimator_quantity", "quantity", "qty", "count", "answer_key_qty"])
             try:
                 qty = int(float(qty_text or "1"))
             except ValueError:
-                qty = 1
+                continue
             if sheet and tag:
                 counts[(sheet, tag)] += qty
     return counts
@@ -168,6 +170,7 @@ def _write_comparison(
                 "ai_detected_qty",
                 "answer_key_qty",
                 "delta",
+                "percent_difference",
                 "status",
             ]
         )
@@ -175,15 +178,21 @@ def _write_comparison(
             ai_qty = detection_sheet_tag[(sheet, tag)]
             answer_qty = answer_sheet_tag[(sheet, tag)]
             delta = ai_qty - answer_qty
-            if ai_qty and answer_qty and delta == 0:
-                status = "match"
-            elif ai_qty and answer_qty:
-                status = "quantity_differs"
-            elif ai_qty:
-                status = "ai_only"
+            if answer_qty:
+                percent_difference = f"{(delta / answer_qty):.2%}"
             else:
-                status = "answer_key_only"
-            writer.writerow([sheet, tag, ai_qty, answer_qty, delta, status])
+                percent_difference = ""
+            if ai_qty and answer_qty and delta == 0:
+                status = "MATCH"
+            elif ai_qty and answer_qty:
+                status = "MISMATCH"
+            elif ai_qty:
+                status = "ESTIMATOR_MISSING"
+            else:
+                status = "AI_MISSING"
+            if not ai_qty and not answer_qty:
+                status = "NEEDS_REVIEW"
+            writer.writerow([sheet, tag, ai_qty, answer_qty, delta, percent_difference, status])
 
     detection_tag = _by_tag(detection_sheet_tag)
     answer_tag = _by_tag(answer_sheet_tag)
