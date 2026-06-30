@@ -512,6 +512,18 @@ def run_estimator_workflow(
         marked_is_placeholder = "No marked-up drawings generated" in marked_text
     except Exception:
         marked_is_placeholder = False
+    if render_debug.exists():
+        try:
+            with render_debug.open("a", encoding="utf-8") as handle:
+                handle.write("\n## Markup PDF generation result\n\n")
+                handle.write(f"- Marked PDF path: `{marked_up_drawings}`\n")
+                handle.write(f"- Marked PDF exists: {'yes' if marked_up_drawings.exists() else 'no'}\n")
+                handle.write(f"- Marked PDF size bytes: {marked_up_drawings.stat().st_size if marked_up_drawings.exists() else 0}\n")
+                handle.write(f"- Placeholder used: {'yes' if marked_is_placeholder else 'no'}\n")
+                if marked_is_placeholder:
+                    handle.write(f"- Placeholder reason: {render_problem or 'symbol detection did not produce a marked PDF'}\n")
+        except Exception:
+            pass
     validation_dir = out_dir / "validation"
     validation_status = "not run yet; use the validation answer key after estimator review"
     if (validation_dir / "SYMBOL_DETECTION_VALIDATION.md").exists():

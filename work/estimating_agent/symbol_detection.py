@@ -427,17 +427,23 @@ def detect_light_fixtures_from_image(image_path: Path, min_confidence: float = 0
     return candidates
 
 
-def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path) -> list[Path]:
+def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path, source_images: list[Path] | None = None) -> list[Path]:
     marked_dir = out_dir / "marked_images"
     marked_dir.mkdir(parents=True, exist_ok=True)
     by_image: dict[Path, list[FixtureCandidate]] = {}
     for cand in candidates:
         by_image.setdefault(cand.source_image, []).append(cand)
+    for image_path in source_images or []:
+        by_image.setdefault(image_path, [])
 
     marked_paths: list[Path] = []
     for image_path, items in by_image.items():
         image = Image.open(image_path).convert("RGB")
         draw = ImageDraw.Draw(image)
+        if not items:
+            note = "Sheet rendered for estimator review; coordinate markup was limited/unavailable."
+            draw.rectangle([10, 10, min(image.width - 10, 760), 58], fill=(255, 255, 210), outline=(180, 120, 0), width=2)
+            draw.text((20, 24), note, fill=(120, 80, 0))
         for idx, cand in enumerate(items, 1):
             if cand.category == "light_fixture":
                 color = (255, 0, 0)
@@ -452,7 +458,7 @@ def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path) -> l
             draw.rectangle([cand.x, cand.y, cand.x + cand.width, cand.y + cand.height], outline=color, width=3)
             if idx <= 200:
                 draw.text((cand.x, max(0, cand.y - 12)), str(idx), fill=color)
-        out = marked_dir / f"{image_path.stem}_light_fixture_candidates.png"
+        out = marked_dir / f"{image_path.stem}_marked_review.png"
         image.save(out)
         marked_paths.append(out)
     return marked_paths
@@ -461,6 +467,8 @@ def _write_marked_images(candidates: list[FixtureCandidate], out_dir: Path) -> l
 def _write_marked_pdf(marked_images: list[Path], out_path: Path) -> None:
     if not marked_images:
         return
+    if out_path.exists():
+        out_path.unlink()
     first = Image.open(marked_images[0])
     page_size = landscape((first.width, first.height))
     c = canvas.Canvas(str(out_path), pagesize=page_size)
@@ -480,7 +488,7 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
     for image in images:
         candidates.extend(detect_light_fixtures_from_image(image, min_confidence=min_confidence))
 
-    marked_images = _write_marked_images(candidates, out_dir)
+    marked_images = _write_marked_images(candidates, out_dir, source_images=images)
     marked_pdf = out_dir / "marked_up_drawings.pdf"
     _write_marked_pdf(marked_images, marked_pdf)
 
@@ -557,6 +565,8 @@ def detect_light_fixtures(rendered_sheets_dir: Path, out_dir: Path, min_confiden
         handle.write(f"- Rendered sheet images scanned: {len(images)}\n")
         handle.write(f"- Candidate labels/symbols found: {len(candidates)}\n")
         handle.write(f"- Marked image previews: {len(marked_images)}\n\n")
+        if images and not candidates:
+            handle.write("Rendered pages were still included in `marked_up_drawings.pdf` with a review note because no coordinate-level candidates were found.\n\n")
         handle.write("## Categories\n\n")
         if category_counts:
             for category, qty in sorted(category_counts.items()):

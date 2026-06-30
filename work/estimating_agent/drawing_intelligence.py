@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -338,6 +339,35 @@ def _fallback_relevant_pages(project_folder: Path, max_pages: int = 80, max_shee
             )
             if len(located) >= max_sheets:
                 return located
+    # Last-resort review fallback: if the input has drawing PDFs but searchable
+    # text/sheet classification was weak, render the first few pages rather
+    # than returning no sheets and forcing a placeholder marked PDF.
+    for pdf in pdfs:
+        try:
+            reader = PdfReader(str(pdf))
+            page_count = min(len(reader.pages), 3)
+        except Exception:
+            continue
+        for page_number in range(1, page_count + 1):
+            target = SheetTarget(
+                discipline="review_required",
+                sheet_number=f"PAGE{page_number}",
+                sheet_title="First pages rendered as fallback review candidates",
+                confidence=0.25,
+                source_pdf=pdf,
+            )
+            located.append(
+                LocatedSheet(
+                    target=target,
+                    pdf=pdf,
+                    page=page_number,
+                    page_score=0.25,
+                    text_chars=len(_single_page_text(pdf, page_number)),
+                    reason="last-resort first-pages fallback because no relevant sheet text was found",
+                )
+            )
+            if len(located) >= max_sheets:
+                return located
     return located
 
 
@@ -541,7 +571,9 @@ def write_drawing_intelligence_outputs(
     pdfs_discovered = find_pdf_candidates(project_folder, limit=20)
     with render_debug_md.open("w", encoding="utf-8") as handle:
         handle.write("# Render debug\n\n")
+        handle.write(f"- Timestamp: {datetime.now().isoformat(timespec='seconds')}\n")
         handle.write(f"- Input project path: `{project_folder}`\n")
+        handle.write(f"- Input type: {'single PDF' if project_folder.is_file() else 'folder'}\n")
         handle.write(f"- PDFs discovered: {len(pdfs_discovered)}\n")
         for candidate in pdfs_discovered[:20]:
             handle.write(f"  - {candidate.kind}: `{candidate.path}`\n")

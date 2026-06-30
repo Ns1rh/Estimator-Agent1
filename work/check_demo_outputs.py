@@ -36,7 +36,7 @@ def _pdf_appears_placeholder(path: Path) -> bool:
         text = "\n".join(page.extract_text() or "" for page in reader.pages[:1])
     except Exception:
         return False
-    return "No marked-up drawings generated" in text
+    return "No marked-up drawings generated" in text or "skipped: no rendered sheets" in text
 
 
 def check_outputs(out_dir: Path) -> tuple[bool, list[str]]:
@@ -63,7 +63,10 @@ def check_outputs(out_dir: Path) -> tuple[bool, list[str]]:
 
     marked_pdf = out_dir / "marked_up_drawings.pdf"
     if marked_pdf.exists() and marked_pdf.stat().st_size > 0:
-        if _pdf_appears_placeholder(marked_pdf):
+        if marked_pdf.stat().st_size < 1500:
+            ok = False
+            messages.append("FAIL marked_up_drawings.pdf exists but is suspiciously small")
+        elif _pdf_appears_placeholder(marked_pdf):
             ok = False
             messages.append("FAIL marked_up_drawings.pdf exists but appears to be a placeholder")
         else:
