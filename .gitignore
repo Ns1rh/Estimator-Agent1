@@ -19,6 +19,7 @@ outputs/training-set/
 outputs/intake-packets/
 outputs/estimator-package/
 outputs/capability-check/
+outputs/capability-check-holdout/
 samples/
 
 # Real estimating/project data - DO NOT COMMIT
