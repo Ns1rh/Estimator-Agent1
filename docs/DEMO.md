@@ -1,22 +1,20 @@
 # Estimator Agent Demo
 
-This demo uses a synthetic light-fixture project. It does not contain company drawings.
+This project currently demonstrates a first-pass light fixture takeoff review workflow.
 
-## 1. Create the safe demo project
+It does not use company drawings. It does not price work. It does not create an Accubid database. It is not final bid output.
 
-```powershell
-python work\create_demo_project.py --out-dir "samples\safe_light_fixture_project"
-```
+## 1. Smoke demo
 
-## 2. Run the estimator package workflow
+Purpose: prove the main workflow works end to end.
 
 ```powershell
-python work\estimating_agent_cli.py estimate-project --project-folder "samples\safe_light_fixture_project" --out-dir "outputs\estimator-package\safe-demo"
+python work\create_demo_project.py --out-dir "samples\safe_light_fixture_project_v2" --seed 1
+
+python work\estimating_agent_cli.py estimate-project --project-folder "samples\safe_light_fixture_project_v2" --out-dir "outputs\estimator-package\safe-demo-final"
 ```
 
-## 3. Open the outputs
-
-The top-level estimator package should contain:
+Expected top-level estimator package:
 
 - `project_dashboard.md`
 - `takeoff_items.csv`
@@ -25,12 +23,43 @@ The top-level estimator package should contain:
 - `marked_up_drawings.pdf`
 - `validation_answer_key_template.csv`
 
-## What to show
+## 2. Randomized capability check
 
-Start with `project_dashboard.md`, then open `takeoff_items.csv` and `marked_up_drawings.pdf`.
+Purpose: check whether the workflow works beyond one fixed drawing.
 
-The important story is:
+```powershell
+python work\run_capability_check.py --cases 5 --out-dir "outputs\capability-check"
+```
 
-> Project folder goes in. A first-pass light fixture takeoff review package comes out.
+This generates multiple safe synthetic projects using different seeds, runs `estimate-project` blind, validates after the fact using generated answer keys, and writes:
 
-The output is still estimator-reviewed. It is not final bid output.
+- `outputs\capability-check\summary.md`
+- `outputs\capability-check\summary.csv`
+
+These metrics are honest development metrics. They do not prove production accuracy on real drawings.
+
+## 3. Future real/public project testing
+
+Later, run the same `estimate-project` command against reviewed public project documents or approved internal projects.
+
+Real outputs still require estimator review, especially:
+
+- fixture quantities
+- fixture schedule descriptions
+- fixture tags missing from schedule
+- schedule tags not found on selected plan sheets
+- Accubid item/assembly mapping
+
+## How to show the current demo
+
+Open these in order:
+
+1. `project_dashboard.md`
+2. `takeoff_items.csv`
+3. `marked_up_drawings.pdf`
+4. `accubid_mapping.csv`
+5. `outputs\capability-check\summary.md` if available
+
+The short explanation:
+
+> Project folder in. First-pass light fixture takeoff review package out. The smoke demo proves the workflow, and the randomized capability check gives a more honest measure of current detection ability.

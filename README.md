@@ -61,6 +61,23 @@ After an estimator fills `validation_answer_key_template.csv` with reviewed quan
 python work\estimating_agent_cli.py validate-detections-csv --detections "outputs\estimator-package\PROJECT\takeoff_items.csv" --answer-key "outputs\estimator-package\PROJECT\validation_answer_key_template.csv" --out-dir "outputs\estimator-package\PROJECT\validation"
 ```
 
+## Safe demo and capability check
+
+Create a safe synthetic project and run the main workflow:
+
+```powershell
+python work\create_demo_project.py --out-dir "samples\safe_light_fixture_project_v2" --seed 1
+python work\estimating_agent_cli.py estimate-project --project-folder "samples\safe_light_fixture_project_v2" --out-dir "outputs\estimator-package\safe-demo-final"
+```
+
+Run a randomized development-only capability check:
+
+```powershell
+python work\run_capability_check.py --cases 5 --out-dir "outputs\capability-check"
+```
+
+The randomized check helps show whether the tool works beyond one fixed drawing. It still uses safe synthetic projects and does not prove production accuracy on real drawings.
+
 ## Important safety rule
 
 Do not commit company project data.

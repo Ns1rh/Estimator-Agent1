@@ -37,7 +37,6 @@ def _write_empty_takeoff(path: Path) -> None:
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "item",
                 "project_name",
                 "source_file",
                 "sheet_number",
@@ -158,27 +157,27 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
         writer = csv.writer(handle)
         writer.writerow(
             [
-                "sheet",
+                "project_name",
+                "source_file",
                 "sheet_number",
+                "sheet_name",
+                "category",
                 "tag",
-                "ai_quantity",
                 "reviewed_quantity",
-                "review_source",
-                "review_status",
-                "estimator_note",
+                "notes",
             ]
         )
         for row in rows:
             writer.writerow(
                 [
-                    row.get("sheet", ""),
+                    row.get("project_name", ""),
+                    row.get("source_file", ""),
                     row.get("sheet_number", row.get("sheet", "")),
+                    row.get("sheet_name", ""),
+                    row.get("category", "LIGHT FIXTURE"),
                     row.get("tag", _tag_from_takeoff_item(row.get("item", ""))),
-                    row.get("quantity", ""),
                     "",
-                    "",
-                    "needs_review",
-                    "",
+                    f"AI quantity: {row.get('quantity', '')}. Enter reviewed quantity only after estimator review.",
                 ]
             )
 
@@ -362,6 +361,12 @@ def run_estimator_workflow(
     internal_dir = out_dir / "_internal"
     run_manifest = internal_dir / "workflow_manifest.csv"
 
+    if internal_dir.exists():
+        shutil.rmtree(internal_dir)
+    for stale_file in [project_dashboard, takeoff_items, estimator_review, accubid_mapping, marked_up_drawings, validation_answer_key]:
+        if stale_file.exists():
+            stale_file.unlink()
+
     steps: list[tuple[str, str, str]] = []
 
     intake_dir = out_dir / "_internal" / "01_project_intake"
@@ -457,6 +462,8 @@ def run_estimator_workflow(
 
     sheet_rows = _read_csv(sheet_index_csv) if sheet_index_csv and sheet_index_csv.exists() else []
     page_rows = _read_csv(sheet_page_map) if sheet_page_map and sheet_page_map.exists() else []
+    project_file_rows = _read_csv(project_files_csv) if project_files_csv and project_files_csv.exists() else []
+    pdf_file_count = sum(1 for row in project_file_rows if (row.get("extension") or "").lower() == ".pdf")
     takeoff_rows = _read_csv(takeoff_items)
     review_required = sum(1 for row in takeoff_rows if (row.get("review_status") or "").upper() in {"NEEDS_REVIEW", "MISMATCH", ""})
     schedule_matched_rows = sum(1 for row in takeoff_rows if row.get("schedule_description"))
@@ -500,7 +507,8 @@ def run_estimator_workflow(
         handle.write("## What the agent found\n\n")
         handle.write(f"- Project scanned: `{project_folder}`\n")
         handle.write(f"- Run timestamp: {datetime.now().isoformat(timespec='seconds')}\n")
-        handle.write(f"- PDFs scanned/classified: {len(_read_csv(project_files_csv)) if project_files_csv and project_files_csv.exists() else 0}\n")
+        handle.write(f"- Project files classified: {len(project_file_rows)}\n")
+        handle.write(f"- PDFs scanned/classified: {pdf_file_count}\n")
         handle.write(f"- Electrical sheet candidates from intake: {len(sheet_rows)}\n")
         handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")

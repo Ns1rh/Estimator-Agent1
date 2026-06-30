@@ -27,6 +27,8 @@ SCHEDULE_TITLE_WORDS = (
     "FIXTURE SCHEDULE",
 )
 
+SCHEDULE_ROW_TAG = re.compile(r"(?<![A-Z0-9])(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|X\d+[A-Z]?)(?![a-z])")
+
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
@@ -222,6 +224,11 @@ def _tag_positions(text: str, tags: list[str]) -> list[tuple[int, str]]:
     return sorted((start, tag) for tag, start in first_by_tag.items())
 
 
+def _schedule_boundary_tags(text: str, requested_tags: list[str]) -> list[str]:
+    found = {match.group(0).upper() for match in SCHEDULE_ROW_TAG.finditer(text.upper())}
+    return sorted(found | {tag.upper() for tag in requested_tags}, key=lambda value: (-len(value), value))
+
+
 def extract_fixture_schedule_entries(project_folder: Path, tags: list[str]) -> list[FixtureScheduleEntry]:
     if not tags:
         return []
@@ -229,10 +236,13 @@ def extract_fixture_schedule_entries(project_folder: Path, tags: list[str]) -> l
 
     for pdf, page, text, source_reason in _candidate_schedule_texts(project_folder):
         text = _fixture_schedule_section(text)
-        positions = _tag_positions(text, tags)
+        requested = {tag.upper() for tag in tags}
+        positions = _tag_positions(text, _schedule_boundary_tags(text, tags))
         if not positions:
             continue
         for index, (start, tag) in enumerate(positions):
+            if tag not in requested:
+                continue
             if tag in entries_by_tag:
                 continue
             end = positions[index + 1][0] if index + 1 < len(positions) else min(len(text), start + 500)

@@ -18,6 +18,7 @@ outputs/database-prep/
 outputs/training-set/
 outputs/intake-packets/
 outputs/estimator-package/
+outputs/capability-check/
 samples/
 
 # Real estimating/project data - DO NOT COMMIT
