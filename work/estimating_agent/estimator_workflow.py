@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,8 @@ from pathlib import Path
 from reportlab.pdfgen import canvas
 
 from .drawing_intelligence import write_drawing_intelligence_outputs
-from .project_intake import write_intake_outputs
+from .project_intake import sheet_number_from_filename, write_intake_outputs
+from .reference_extraction import ReferenceQuantity, extract_previous_estimate_references, extract_tpx_references
 from .schedule_understanding import write_fixture_schedule_outputs
 from .symbol_detection import detect_light_fixtures
 
@@ -151,7 +153,7 @@ def _enrich_takeoff_with_fixture_schedule(takeoff_items: Path, schedule_entries_
     return matched
 
 
-def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -> None:
+def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path, reference_rows: list[ReferenceQuantity] | None = None) -> None:
     rows = _read_csv(takeoff_items)
     with out_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -164,6 +166,7 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
                 "category",
                 "tag",
                 "reviewed_quantity",
+                "comparison_status",
                 "notes",
             ]
         )
@@ -177,9 +180,79 @@ def _write_validation_answer_key_template(takeoff_items: Path, out_path: Path) -
                     row.get("category", "LIGHT FIXTURE"),
                     row.get("tag", _tag_from_takeoff_item(row.get("item", ""))),
                     "",
+                    "NEEDS_ESTIMATOR_REVIEW",
                     f"AI quantity: {row.get('quantity', '')}. Enter reviewed quantity only after estimator review.",
                 ]
             )
+        for ref in reference_rows or []:
+            writer.writerow(
+                [
+                    "",
+                    str(ref.source_file),
+                    "REFERENCE",
+                    ref.source_type,
+                    ref.category,
+                    ref.description[:80],
+                    f"{ref.quantity:g}",
+                    "REFERENCE_ONLY",
+                    f"Reference quantity only; source={ref.source_type}; not AI drawing detection.",
+                ]
+            )
+
+
+def _reference_totals(rows: list[ReferenceQuantity]) -> Counter[str]:
+    totals: Counter[str] = Counter()
+    for row in rows:
+        if row.source_type == "previous_estimate_reference":
+            totals[row.category] = max(totals[row.category], row.quantity)
+        else:
+            totals[row.category] += row.quantity
+    return totals
+
+
+def _ai_totals(rows: list[dict[str, str]]) -> Counter[str]:
+    totals: Counter[str] = Counter()
+    for row in rows:
+        category = row.get("category") or "other"
+        try:
+            totals[category] += float(row.get("quantity") or 0)
+        except ValueError:
+            continue
+    return totals
+
+
+def _reference_comparison(ai_rows: list[dict[str, str]], previous_refs: list[ReferenceQuantity], tpx_refs: list[ReferenceQuantity]) -> list[dict[str, str]]:
+    ai = _ai_totals(ai_rows)
+    previous = _reference_totals(previous_refs)
+    tpx = _reference_totals(tpx_refs)
+    categories = sorted(set(ai) | set(previous) | set(tpx))
+    rows: list[dict[str, str]] = []
+    for category in categories:
+        ai_qty = ai.get(category, 0)
+        previous_qty = previous.get(category, 0)
+        tpx_qty = tpx.get(category, 0)
+        reference_qty = previous_qty if previous_qty else tpx_qty
+        if ai_qty and reference_qty and abs(ai_qty - reference_qty) < 0.001:
+            status = "AI_MATCHES_REFERENCE"
+        elif ai_qty and reference_qty:
+            status = "AI_DIFFERS_FROM_REFERENCE"
+        elif reference_qty and not ai_qty:
+            status = "REFERENCE_ONLY"
+        elif ai_qty and not reference_qty:
+            status = "AI_ONLY"
+        else:
+            status = "NEEDS_ESTIMATOR_REVIEW"
+        rows.append(
+            {
+                "category": category,
+                "ai_detected_quantity": f"{ai_qty:g}",
+                "previous_estimate_reference_quantity": f"{previous_qty:g}",
+                "livecount_tpx_reference_quantity": f"{tpx_qty:g}",
+                "status": status,
+                "notes": "Reference quantities are comparison evidence, not AI detections.",
+            }
+        )
+    return rows
 
 
 def _sheet_lookup(selected_sheet_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -296,10 +369,33 @@ def _sheet_priority(row: dict[str, str]) -> tuple[int, int, float, str]:
     return bucket, 0 if is_plan else 1, -confidence, sheet
 
 
+def _sheet_row_quality(row: dict[str, str]) -> tuple[int, float, int]:
+    sheet = (row.get("sheet_number") or "").upper()
+    title = (row.get("sheet_title") or "").upper()
+    try:
+        confidence = float(row.get("confidence") or 0)
+    except ValueError:
+        confidence = 0.0
+    filename_sheet = sheet_number_from_filename(Path(row.get("pdf", ""))).upper()
+    filename_match = 1 if sheet and filename_sheet == sheet else 0
+    has_real_title = 1 if title and title != sheet else 0
+    return filename_match, confidence, has_real_title
+
+
 def _write_focused_sheet_index(sheet_index_csv: Path, out_path: Path, limit: int) -> tuple[Path, list[dict[str, str]]]:
     rows = _read_csv(sheet_index_csv)
     if not rows:
         return sheet_index_csv, []
+
+    best_by_sheet: dict[str, dict[str, str]] = {}
+    for row in rows:
+        sheet = (row.get("sheet_number") or "").upper()
+        if not sheet:
+            continue
+        old = best_by_sheet.get(sheet)
+        if old is None or _sheet_row_quality(row) > _sheet_row_quality(old):
+            best_by_sheet[sheet] = row
+    rows = list(best_by_sheet.values()) or rows
 
     focused = sorted(rows, key=_sheet_priority)
     useful = [row for row in focused if _sheet_priority(row)[0] < 9]
@@ -420,6 +516,7 @@ def run_estimator_workflow(
                 rendered_dir,
                 symbol_dir,
                 min_confidence=min_confidence,
+                project_folder=project_folder,
             )
             _copy_if_exists(detected_takeoff, takeoff_items)
             _copy_if_exists(detected_review, estimator_review)
@@ -434,6 +531,23 @@ def run_estimator_workflow(
         _write_empty_takeoff(takeoff_items)
         _write_empty_review(estimator_review)
         steps.append(("symbol_detection_supported_categories", f"failed: {exc}", ""))
+
+    reference_scope_dir = out_dir / "_internal" / "reference_scope"
+    livecount_reference_dir = out_dir / "_internal" / "livecount_reference"
+    previous_reference_rows: list[ReferenceQuantity] = []
+    tpx_reference_rows: list[ReferenceQuantity] = []
+    try:
+        reference_scope_csv, reference_scope_md, previous_reference_rows = extract_previous_estimate_references(project_folder, reference_scope_dir)
+        steps.append(("previous_estimate_reference_extraction", f"done: {len(previous_reference_rows)} reference row(s)", str(reference_scope_md)))
+    except Exception as exc:
+        reference_scope_csv = reference_scope_md = Path("")
+        steps.append(("previous_estimate_reference_extraction", f"failed: {exc}", ""))
+    try:
+        livecount_reference_csv, livecount_reference_md, tpx_reference_rows = extract_tpx_references(project_folder, livecount_reference_dir)
+        steps.append(("livecount_tpx_reference_extraction", f"done: {len(tpx_reference_rows)} reference row(s)", str(livecount_reference_md)))
+    except Exception as exc:
+        livecount_reference_csv = livecount_reference_md = Path("")
+        steps.append(("livecount_tpx_reference_extraction", f"failed: {exc}", ""))
 
     if not takeoff_items.exists():
         _write_empty_takeoff(takeoff_items)
@@ -464,7 +578,8 @@ def run_estimator_workflow(
         selected_sheet_rows=selected_sheet_rows,
     )
     _write_accubid_mapping_template(takeoff_items, accubid_mapping)
-    _write_validation_answer_key_template(takeoff_items, validation_answer_key)
+    reference_rows = [*previous_reference_rows, *tpx_reference_rows]
+    _write_validation_answer_key_template(takeoff_items, validation_answer_key, reference_rows)
 
     run_manifest.parent.mkdir(parents=True, exist_ok=True)
     with run_manifest.open("w", newline="", encoding="utf-8") as handle:
@@ -477,6 +592,25 @@ def run_estimator_workflow(
     project_file_rows = _read_csv(project_files_csv) if project_files_csv and project_files_csv.exists() else []
     pdf_file_count = sum(1 for row in project_file_rows if (row.get("extension") or "").lower() == ".pdf")
     takeoff_rows = _read_csv(takeoff_items)
+    symbol_templates_csv = out_dir / "_internal" / "symbol_templates" / "symbol_templates.csv"
+    template_matches_csv = out_dir / "_internal" / "03_symbol_detection" / "template_matches.csv"
+    rcp_candidates_csv = out_dir / "_internal" / "03_symbol_detection" / "rcp_rectangle_candidates.csv"
+    final_candidates_csv = out_dir / "_internal" / "03_symbol_detection" / "final_candidates.csv"
+    detection_strategy_debug = out_dir / "_internal" / "03_symbol_detection" / "detection_strategy_debug.md"
+    symbol_template_rows = _read_csv(symbol_templates_csv)
+    template_match_rows = _read_csv(template_matches_csv)
+    rcp_candidate_rows = _read_csv(rcp_candidates_csv)
+    final_candidate_rows = _read_csv(final_candidates_csv)
+    template_source_counts = Counter(row.get("extraction_method", "") for row in symbol_template_rows)
+    accepted_rcp_candidates = [row for row in rcp_candidate_rows if (row.get("accepted") or "").lower() == "yes"]
+    rejected_rcp_candidates = [row for row in rcp_candidate_rows if (row.get("accepted") or "").lower() != "yes"]
+    comparison_rows = _reference_comparison(takeoff_rows, previous_reference_rows, tpx_reference_rows)
+    comparison_csv = out_dir / "_internal" / "reference_comparison.csv"
+    _write_csv_rows(
+        comparison_csv,
+        comparison_rows,
+        ["category", "ai_detected_quantity", "previous_estimate_reference_quantity", "livecount_tpx_reference_quantity", "status", "notes"],
+    )
     review_required = sum(1 for row in takeoff_rows if (row.get("review_status") or "").upper() in {"NEEDS_REVIEW", "MISMATCH", ""})
     schedule_matched_rows = sum(1 for row in takeoff_rows if row.get("schedule_description"))
     review_category_counts: dict[str, int] = {}
@@ -562,8 +696,19 @@ def run_estimator_workflow(
         handle.write(f"- Electrical sheet candidates from intake: {len(sheet_rows)}\n")
         handle.write(f"- Likely plan sheets selected for takeoff: {len(selected_sheet_rows)}\n")
         handle.write(f"- Located/rendered sheets from drawing intelligence: {len(page_rows)}\n")
+        handle.write(f"- Symbol templates found: {len(symbol_template_rows)}\n")
+        handle.write(f"- Project legend/schedule templates: {template_source_counts.get('legend_text', 0)}\n")
+        handle.write(f"- Company/private library symbols: {template_source_counts.get('private_company_library', 0)}\n")
+        handle.write(f"- Starter library symbols: {template_source_counts.get('starter_symbol_taxonomy', 0)}\n")
+        handle.write(f"- Template/label matches recorded: {len(template_match_rows)}\n")
+        handle.write(f"- Final fused candidates: {len(final_candidate_rows)}\n")
+        handle.write(f"- RCP rectangle candidates inspected: {len(rcp_candidate_rows)}\n")
+        handle.write(f"- RCP rectangle candidates accepted: {len(accepted_rcp_candidates)}\n")
+        handle.write(f"- RCP rectangle candidates rejected: {len(rejected_rcp_candidates)}\n")
         handle.write(f"- Takeoff item rows produced: {len(takeoff_rows)}\n")
         handle.write(f"- Total first-pass detected quantity: {total_fixture_qty}\n")
+        handle.write(f"- Previous estimate/reference rows found: {len(previous_reference_rows)}\n")
+        handle.write(f"- LiveCount/TPX reference rows found: {len(tpx_reference_rows)}\n")
         handle.write(f"- Takeoff rows matched to schedule descriptions: {schedule_matched_rows}\n")
         handle.write(f"- Rows requiring estimator review: {review_required}\n\n")
         handle.write("## Markup and validation status\n\n")
@@ -574,13 +719,73 @@ def run_estimator_workflow(
             handle.write(f"- Marked drawing PDF: {marked_status} (`marked_up_drawings.pdf`)\n")
         if render_debug.exists():
             handle.write(f"- Render diagnostics: `{render_debug}`\n")
+        if symbol_templates_csv.exists():
+            handle.write(f"- Symbol templates: `{symbol_templates_csv}`\n")
+        if template_matches_csv.exists():
+            handle.write(f"- Template/label matches: `{template_matches_csv}`\n")
+        if rcp_candidates_csv.exists():
+            handle.write(f"- RCP rectangle candidates: `{rcp_candidates_csv}`\n")
+        if final_candidates_csv.exists():
+            handle.write(f"- Final fused candidates: `{final_candidates_csv}`\n")
+        if detection_strategy_debug.exists():
+            handle.write(f"- Detection strategy debug: `{detection_strategy_debug}`\n")
         handle.write(f"- Validation status: {validation_status}\n\n")
 
         if review_category_counts:
-            handle.write("## Quantities by category\n\n")
+            handle.write("## A. AI detected from drawings\n\n")
             for category, count in sorted(review_category_counts.items()):
                 handle.write(f"- {category}: {category_quantities.get(category, 0)} detected quantity across {count} takeoff row(s)\n")
             handle.write("\n")
+        else:
+            handle.write("## A. AI detected from drawings\n\n")
+            handle.write("- No AI drawing detections were produced.\n\n")
+
+        handle.write("## Symbol templates found\n\n")
+        if symbol_template_rows:
+            handle.write(f"- Project legend/schedule templates: {template_source_counts.get('legend_text', 0)}\n")
+            handle.write(f"- Company/private library symbols: {template_source_counts.get('private_company_library', 0)}\n")
+            handle.write(f"- Starter library symbols: {template_source_counts.get('starter_symbol_taxonomy', 0)}\n\n")
+            for row in symbol_template_rows[:20]:
+                handle.write(
+                    f"- {row.get('category', '')} / {row.get('tag', '')}: "
+                    f"{row.get('description', '')[:120]} "
+                    f"(page {row.get('page_number', '')}, method {row.get('extraction_method', '')})\n"
+                )
+            handle.write("\n")
+        else:
+            handle.write("- No symbol legend/schedule templates were found.\n\n")
+
+        previous_totals = _reference_totals(previous_reference_rows)
+        handle.write("## B. Reference quantities from previous estimate\n\n")
+        handle.write("These came from prior estimate/reference documents, not AI drawing detection.\n\n")
+        if previous_totals:
+            for category, qty in sorted(previous_totals.items()):
+                handle.write(f"- {category}: {qty:g}\n")
+            handle.write(f"\nReference detail: `{reference_scope_csv}`\n\n")
+        else:
+            handle.write("- No previous estimate/reference quantities found.\n\n")
+
+        tpx_totals = _reference_totals(tpx_reference_rows)
+        handle.write("## C. Reference quantities from TPX/LiveCount\n\n")
+        handle.write("These came from a LiveCount/TPX export, not AI drawing detection.\n\n")
+        if tpx_totals:
+            for category, qty in sorted(tpx_totals.items()):
+                handle.write(f"- {category}: {qty:g}\n")
+            handle.write(f"\nReference detail: `{livecount_reference_csv}`\n\n")
+        else:
+            handle.write("- No LiveCount/TPX reference quantities found.\n\n")
+
+        handle.write("## D. Items needing estimator review\n\n")
+        if comparison_rows:
+            for row in comparison_rows:
+                handle.write(
+                    f"- {row['category']}: AI {row['ai_detected_quantity']}, "
+                    f"previous estimate {row['previous_estimate_reference_quantity']}, "
+                    f"TPX {row['livecount_tpx_reference_quantity']} - {row['status']}\n"
+                )
+            handle.write(f"\nComparison detail: `{comparison_csv}`\n\n")
+        else:
+            handle.write("- No AI or reference quantities were available to compare.\n\n")
 
         if selected_sheet_rows:
             handle.write("## Sheets used for this run\n\n")

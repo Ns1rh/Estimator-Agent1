@@ -40,6 +40,15 @@ REGION_KEYWORDS = {
 }
 RENDER_RELEVANT_WORDS = (
     "LIGHTING PLAN",
+    "REFLECTED CEILING PLAN",
+    "CEILING PLAN",
+    "RCP",
+    "ROOM ",
+    "2X4 LED",
+    "LIGHT FIXTURE",
+    "LIGHTING FIXTURE",
+    "LUMINAIRE",
+    "FIXTURE LAYOUT",
     "FIRE ALARM PLAN",
     "LUMINAIRE SCHEDULE",
     "FIXTURE SCHEDULE",
@@ -48,6 +57,32 @@ RENDER_RELEVANT_WORDS = (
     "SMOKE DETECTOR",
     "HORN/STROBE",
     "HORN STROBE",
+)
+LEGEND_REFERENCE_WORDS = (
+    "SYMBOL LEGEND",
+    "ELECTRICAL LEGEND",
+    "LIGHTING LEGEND",
+    "FIXTURE LEGEND",
+    "LUMINAIRE SCHEDULE",
+    "LIGHT FIXTURE SCHEDULE",
+    "DEVICE LEGEND",
+    "FIRE ALARM LEGEND",
+    "FIRE ALARM DEVICE SCHEDULE",
+    "POWER LEGEND",
+    "TELE/DATA LEGEND",
+)
+NON_TAKEOFF_PAGE_WORDS = (
+    "EQUIPMENT LIST",
+    "EXISTING SPACE - INTERIOR PHOTOS",
+    "PROJECT INFORMATION",
+    "SUMMARY CONTACTS",
+    "HEADWALL EQUIPMENT EXAMPLES",
+    "OPTIONS FOR PRICING PACKAGE",
+    "CONTACTS",
+    "CURRICULUM",
+    "ADMINISTRATIVE REQUIREMENTS",
+    "MATERIAL PHOTOS",
+    "INTERIOR PHOTOS",
 )
 
 
@@ -85,6 +120,33 @@ class RegionHint:
 class RenderResult:
     images: list[Path]
     debug_lines: list[str]
+    manifest_rows: list[dict[str, str]]
+
+
+def _is_non_takeoff_text_page(text: str) -> bool:
+    upper = text.upper()
+    return any(word in upper for word in NON_TAKEOFF_PAGE_WORDS)
+
+
+def _is_detection_allowed(sheet: LocatedSheet) -> tuple[bool, str]:
+    text = _single_page_text(sheet.pdf, sheet.page)
+    title = (sheet.target.sheet_title or "").upper()
+    is_plan_title = any(word in title for word in ["PLAN", "REFLECTED CEILING", "CEILING PLAN", "FLOOR PLAN"])
+    if any(word in text.upper() for word in LEGEND_REFERENCE_WORDS) and not is_plan_title:
+        return False, "review_only: legend/schedule reference page"
+    if _is_non_takeoff_text_page(text):
+        return False, "review_only: page text indicates non-plan/reference content"
+    reason = sheet.reason.lower()
+    discipline = (sheet.target.discipline or "").lower()
+    if "last-resort" in reason:
+        return False, "review_only: last-resort fallback page"
+    if "fallback relevant-page selection" in reason and discipline not in {"lighting", "fire_alarm", "electrical", "power", "low_voltage", "electrical_demo"}:
+        return False, "review_only: fallback page without a plan discipline"
+    if any(word in title for word in ["SCHEDULE", "LEGEND", "EQUIPMENT LIST", "CONTACT", "PHOTO", "PROJECT INFORMATION"]):
+        return False, "review_only: title indicates non-plan/reference content"
+    if discipline == "review_required":
+        return False, "review_only: weak fallback candidate"
+    return True, "ai_detection_allowed: likely plan/RCP/electrical sheet"
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -318,8 +380,10 @@ def _fallback_relevant_pages(project_folder: Path, max_pages: int = 80, max_shee
             discipline = discipline_for(sheet_number, title)
             if discipline == "other" and "FIRE ALARM" in upper:
                 discipline = "fire_alarm"
-            elif discipline == "other" and any(word in upper for word in ["LIGHTING", "LUMINAIRE", "EXIT", "EMERGENCY"]):
+            elif discipline == "other" and any(word in upper for word in ["LIGHTING", "LUMINAIRE", "EXIT", "EMERGENCY", "REFLECTED CEILING PLAN", "CEILING PLAN", "RCP", "2X4 LED", "LIGHT FIXTURE"]):
                 discipline = "lighting"
+            if _is_non_takeoff_text_page(text):
+                discipline = "review_required"
             target = SheetTarget(
                 discipline=discipline,
                 sheet_number=sheet_number,
@@ -419,6 +483,7 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
     temp_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[Path] = []
     debug: list[str] = []
+    manifest_rows: list[dict[str, str]] = []
     pdftoppm = _find_pdftoppm()
     debug.append(f"pdftoppm found: {pdftoppm if pdftoppm else 'no'}")
     pymupdf_available = _pymupdf_available()
@@ -464,8 +529,10 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
         matches = sorted(render_dir.glob(f"{prefix.name}-*.png"))
         if matches:
             rendered.extend(matches)
+            created = matches
         elif _render_page_with_pymupdf(sheet.pdf, sheet.page, render_dir / f"{prefix.name}-1.png"):
-            rendered.append(render_dir / f"{prefix.name}-1.png")
+            created = [render_dir / f"{prefix.name}-1.png"]
+            rendered.extend(created)
             debug.append("  PyMuPDF fallback render succeeded")
         elif not pdftoppm and not pymupdf_available:
             debug.append("  no renderer available: pdftoppm not found and PyMuPDF not installed")
@@ -473,8 +540,24 @@ def render_located_sheets(located: list[LocatedSheet], out_dir: Path, max_render
             debug.append("  selected page failed to render with all available methods")
         if len(rendered) == rendered_before:
             debug.append("  no image created for this page")
+            created = []
+        allowed, usage_note = _is_detection_allowed(sheet)
+        for image_path in created:
+            manifest_rows.append(
+                {
+                    "image": str(image_path),
+                    "sheet_number": sheet.target.sheet_number,
+                    "sheet_title": sheet.target.sheet_title,
+                    "pdf_page": str(sheet.page),
+                    "pdf": str(sheet.pdf),
+                    "discipline": sheet.target.discipline,
+                    "detection_allowed": "yes" if allowed else "no",
+                    "usage_note": usage_note,
+                    "selection_reason": sheet.reason,
+                }
+            )
     debug.append(f"Rendered page images created: {len(rendered)}")
-    return RenderResult(images=rendered, debug_lines=debug)
+    return RenderResult(images=rendered, debug_lines=debug, manifest_rows=manifest_rows)
 
 
 def _pymupdf_available() -> bool:
@@ -532,6 +615,7 @@ def write_drawing_intelligence_outputs(
     regions_csv = out_dir / "drawing_regions.csv"
     dashboard_md = out_dir / "drawing_intelligence.md"
     render_debug_md = out_dir / "render_debug.md"
+    render_manifest_csv = out_dir / "rendered_sheet_manifest.csv"
 
     with page_map_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -566,6 +650,12 @@ def write_drawing_intelligence_outputs(
                 ]
             )
 
+    with render_manifest_csv.open("w", newline="", encoding="utf-8") as handle:
+        fieldnames = ["image", "sheet_number", "sheet_title", "pdf_page", "pdf", "discipline", "detection_allowed", "usage_note", "selection_reason"]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(render_result.manifest_rows)
+
     by_discipline = Counter(sheet.target.discipline for sheet in located)
     by_region = Counter(region.region_type for region in regions)
     pdfs_discovered = find_pdf_candidates(project_folder, limit=20)
@@ -581,6 +671,10 @@ def write_drawing_intelligence_outputs(
         for sheet in located[:30]:
             handle.write(f"  - {sheet.target.sheet_number} page {sheet.page} from `{sheet.pdf}`: {sheet.reason}\n")
         handle.write(f"- Rendered page images created: {len(rendered)}\n\n")
+        detection_allowed = sum(1 for row in render_result.manifest_rows if row.get("detection_allowed") == "yes")
+        review_only = sum(1 for row in render_result.manifest_rows if row.get("detection_allowed") != "yes")
+        handle.write(f"- Rendered pages allowed for AI detection: {detection_allowed}\n")
+        handle.write(f"- Rendered pages marked review-only: {review_only}\n\n")
         handle.write("## Render attempts\n\n")
         for line in render_result.debug_lines:
             handle.write(f"- {line}\n")
@@ -630,6 +724,7 @@ def write_drawing_intelligence_outputs(
         handle.write("- `sheet_page_map.csv`\n")
         handle.write("- `drawing_regions.csv`\n")
         handle.write("- `render_debug.md`\n")
+        handle.write("- `rendered_sheet_manifest.csv`\n")
         handle.write("- `rendered_sheets/` preview PNGs when rendering succeeds\n\n")
         handle.write("## Next estimator-agent step\n\n")
         handle.write("Use the located lighting sheets as the first target for symbol detection. Start with one symbol category, such as light fixtures, and compare detected counts against LiveCount/Accubid data when available.\n")

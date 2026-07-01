@@ -54,6 +54,27 @@ ELECTRICAL_KEYWORDS = {
     "disconnect",
     "transformer",
 }
+RCP_KEYWORDS = {
+    "reflected ceiling plan",
+    "ceiling plan",
+    "room ",
+    "2x4 led",
+    "light fixture",
+    "lighting fixture",
+    "luminaire",
+    "fixture layout",
+}
+NON_TAKEOFF_PAGE_KEYWORDS = {
+    "equipment list",
+    "existing space - interior photos",
+    "project information",
+    "summary contacts",
+    "headwall equipment examples",
+    "options for pricing package",
+    "contacts",
+    "curriculum",
+    "administrative requirements",
+}
 FIXTURE_TAG = re.compile(
     r"\b(?:F\d+[A-Z]?|L\d+[A-Z]?|A\d*|B\d*|C\d*|D\d*|EXIT|EM|EBU|X\d+[A-Z-]*|LP-[A-Z0-9-]+)\b",
     re.IGNORECASE,
@@ -288,6 +309,8 @@ def infer_title(text: str, sheet_number: str) -> str:
 def discipline_for(sheet: str, title: str) -> str:
     hay = f"{sheet} {title}".upper()
     sheet_upper = sheet.upper()
+    if any(word.upper() in hay for word in ["REFLECTED CEILING PLAN", "RCP", "CEILING PLAN", "2X4 LED", "FIXTURE LAYOUT"]):
+        return "lighting"
     if sheet_upper.startswith("FA") or "FIRE ALARM" in hay:
         return "fire_alarm"
     if sheet_upper.startswith(("LV", "AV", "T")) or any(word in hay for word in ["LOW VOLTAGE", "TELECOM", "DATA", "SECURITY", "ACCESS", "AV "]):
@@ -307,6 +330,19 @@ def normalize_sheet_number(raw: str) -> str:
     sheet = re.sub(r"\s+", "", raw.upper())
     sheet = sheet.replace("--", "-")
     return sheet
+
+
+def sheet_number_from_filename(path: Path) -> str:
+    match = SHEET_NUMBER.search(path.stem.replace("_", " "))
+    return normalize_sheet_number(match.group(0)) if match else ""
+
+
+def title_from_filename(path: Path, sheet: str) -> str:
+    stem = path.stem.replace("_", " ").replace("-", " ")
+    if sheet:
+        stem = re.sub(re.escape(sheet).replace(r"\-", r"[-\s]?"), "", stem, count=1, flags=re.IGNORECASE)
+    stem = re.sub(r"\s+", " ", stem).strip(" -_")
+    return stem[:120]
 
 
 def page_sheet_confidence(text: str, sheet: str, title: str, pdf_name: str) -> tuple[float, str]:
@@ -369,9 +405,16 @@ def sheet_index_from_pdfs(pdfs: list[PdfCandidate]) -> list[SheetHit]:
     for candidate in pdfs:
         if candidate.kind not in {"drawings", "addendum"}:
             continue
-        for page_index, text in enumerate(extract_page_texts(candidate.path, max_pages=12), 1):
+        for page_index, text in enumerate(extract_page_texts(candidate.path, max_pages=80), 1):
+            upper = text.upper()
+            lower = text.lower()
+            if any(keyword in lower for keyword in NON_TAKEOFF_PAGE_KEYWORDS):
+                continue
             line_hits = sheet_list_hits_from_text(text)
-            if line_hits:
+            filename_sheet = sheet_number_from_filename(candidate.path)
+            if filename_sheet and candidate.path.parent.name.lower() in {"individual_sheets", "sheets", "sheet"}:
+                electrical = [(filename_sheet, title_from_filename(candidate.path, filename_sheet))]
+            elif line_hits:
                 electrical = line_hits
             else:
                 full_matches = [normalize_sheet_number(m.group(0)) for m in SHEET_NUMBER.finditer(text)]
@@ -383,6 +426,9 @@ def sheet_index_from_pdfs(pdfs: list[PdfCandidate]) -> list[SheetHit]:
                     if match not in {sheet for sheet, _ in electrical}:
                         electrical.append((match, ""))
                 electrical = electrical[:5]
+            if not electrical and any(keyword.upper() in upper for keyword in RCP_KEYWORDS):
+                title = infer_title(text, f"PAGE{page_index}") or "Reflected ceiling plan / lighting candidate"
+                electrical = [(f"PAGE{page_index}", title)]
             for sheet, line_title in electrical:
                 key = (str(candidate.path), page_index, sheet)
                 if key in seen:
@@ -390,6 +436,9 @@ def sheet_index_from_pdfs(pdfs: list[PdfCandidate]) -> list[SheetHit]:
                 seen.add(key)
                 title = line_title or infer_title(text, sheet)
                 confidence, reason = page_sheet_confidence(text, sheet, title, candidate.path.name)
+                if any(keyword.upper() in upper for keyword in RCP_KEYWORDS):
+                    confidence = min(0.98, round(confidence + 0.28, 2))
+                    reason = f"{reason}; reflected ceiling/fixture plan clue"
                 if line_title:
                     confidence = min(0.99, round(confidence + 0.12, 2))
                     reason = f"{reason}; sheet-list line"

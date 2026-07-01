@@ -81,3 +81,8 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# Local/generated estimator outputs
+outputs/
+_internal/
+project_dashboard.md

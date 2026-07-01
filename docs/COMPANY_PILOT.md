@@ -33,6 +33,8 @@ C:\EstimatorAgentData\company_projects\PROJECT_ID\input
 
 Reviewed files and answer keys are used only after `estimate-project` finishes.
 
+If the input folder also contains previous proposal/estimate summaries or LiveCount `.tpx` exports, the agent may extract high-level reference quantities for comparison. Those quantities are reported separately under `_internal\reference_scope\` and `_internal\livecount_reference\`. They are not treated as AI drawing detections.
+
 ## Choose a completed project
 
 Choose a project where:
@@ -119,6 +121,24 @@ python work\estimating_agent_cli.py estimate-project --project-folder "C:\Estima
 
 python work\estimating_agent_cli.py validate-detections-csv --detections "C:\EstimatorAgentData\outputs\PROJECT_ID\takeoff_items.csv" --answer-key "C:\EstimatorAgentData\company_projects\PROJECT_ID\answer_key\validation_answer_key.csv" --out-dir "C:\EstimatorAgentData\outputs\PROJECT_ID\validation"
 ```
+
+The estimator package keeps the normal six output files:
+
+- `project_dashboard.md`
+- `takeoff_items.csv`
+- `estimator_review.csv`
+- `accubid_mapping.csv`
+- `marked_up_drawings.pdf`
+- `validation_answer_key_template.csv`
+
+For real company packages, open `project_dashboard.md` first. It separates:
+
+- AI detections from drawings
+- reference quantities from previous estimates
+- reference quantities from LiveCount/TPX exports
+- items needing estimator review
+
+Rendered fallback pages may still appear in `marked_up_drawings.pdf`, but review-only pages are labeled and excluded from automatic visual counts.
 
 ## Run a multi-project company evaluation
 

@@ -29,7 +29,7 @@ SCHEDULE_TITLE_WORDS = (
     "FIRE ALARM SCHEDULE",
 )
 
-SCHEDULE_ROW_TAG = re.compile(r"(?<![A-Z0-9])(?:[A-Z]\d{1,2}[A-Z]?|EM\d?[A-Z]?|EMS|EXIT|EX|X\d*[A-Z]?|SD|HD|DD|PS|PULL|HS|H/S|FACP|FAAP|NAC|MM|MON|CM|CTRL)(?![a-z])", re.IGNORECASE)
+SCHEDULE_ROW_TAG = re.compile(r"(?<![A-Z0-9])(?:[A-Z]{1,3}\d{1,2}[A-Z]?|B|EM\d?[A-Z]?|EMS|EXIT|EX|X\d*[A-Z]?|SD|HD|DD|PS|PULL|HS|H/S|FACP|FAAP|NAC|MM|MON|CM|CTRL)(?![a-z])", re.IGNORECASE)
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -194,6 +194,11 @@ def _fixture_schedule_section(text: str) -> str:
         if not starts:
             return text
         start = min(starts)
+    # Some Revit/PDF exports extract schedule rows first and the title/header
+    # last. If the schedule heading appears near the end, include the nearby
+    # preceding text so row tags like PB1/PD1/RD2 can still be matched.
+    if start > len(text) * 0.55:
+        start = max(0, start - 9000)
     section = text[start:]
     section_upper = section.upper()
     note_match = re.search(r"\b(?:SCHEDULE NOTES|LIGHTING FIXTURE SCHEDULE NOTES|FIXTURE SCHEDULE NOTES|FIRE ALARM SCHEDULE NOTES)\b", section_upper)
