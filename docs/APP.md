@@ -45,7 +45,8 @@ The app title is:
 
 The header displays:
 
-- `New Age Electric LLC`
+- the approved New Age Electric LLC logo when available
+- `Estimator Assistant`
 - `First-pass electrical takeoff review assistant`
 - `Burbank, CA`
 
