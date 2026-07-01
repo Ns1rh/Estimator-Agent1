@@ -18,9 +18,10 @@ The app lets an estimator:
 2. Select an output folder.
 3. Run `estimate-project`.
 4. Watch live progress and command logs.
-5. Open the generated estimator package files.
-6. Run validation against a reviewed answer-key CSV.
-7. Run the safe demo and check the current output package.
+5. See the exact estimator package output folder after a run finishes.
+6. Refresh output file status and open generated estimator package files.
+7. Run validation against a reviewed answer-key CSV.
+8. Run the safe demo and check the current output package.
 
 Visible reminder in the app:
 
@@ -77,6 +78,15 @@ C:\EstimatorAgentData\local_tests\PROJECT_NAME\output
    - `takeoff_items.csv`
    - `estimator_review.csv`
    - `marked_up_drawings.pdf`
+
+After the run finishes, the app displays:
+
+```text
+Estimator package created:
+<absolute output folder path>
+```
+
+Use `Refresh Output Files` if files were generated outside the app or if you manually changed the output folder. The app will rescan the folder and enable only the buttons for files that exist.
 
 Company drawings, specs, marked drawings, LiveCount files, Accubid files, pricing files, and private outputs should stay local/private and should not be committed to Git.
 

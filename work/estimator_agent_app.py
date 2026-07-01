@@ -17,6 +17,11 @@ except Exception:  # pragma: no cover - Tkinter fallback for minimal installs
     Image = None  # type: ignore[assignment]
     ImageTk = None  # type: ignore[assignment]
 
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover - UI still works without deep PDF inspection
+    PdfReader = None  # type: ignore[assignment]
+
 
 APP_TITLE = "New Age Electric Estimator Assistant"
 COMPANY_NAME = "New Age Electric LLC"
@@ -71,13 +76,18 @@ class EstimatorAgentApp(tk.Tk):
         self.project_name_var = tk.StringVar()
         self.answer_key_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
-        self.progress_var = tk.StringVar(value="Select a project folder or PDF to begin.")
+        self.progress_var = tk.StringVar(value="Ready - select a project folder or PDF.")
+        self.output_location_var = tk.StringVar(value="Output folder: not selected yet")
+        self.validation_location_var = tk.StringVar(value="Validation output: not run yet")
         self.elapsed_var = tk.StringVar(value="Elapsed: 00:00")
         self.command_running = False
         self.started_at: float | None = None
         self.log_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.output_status_labels: dict[str, ttk.Label] = {}
         self.output_buttons: dict[str, ttk.Button] = {}
+        self.output_file_buttons: dict[str, ttk.Button] = {}
+        self.output_folder_button: ttk.Button | None = None
+        self.run_validation_button: ttk.Button | None = None
         self.validation_buttons: list[ttk.Button] = []
         self.logo_image: tk.PhotoImage | None = None
 
@@ -215,6 +225,8 @@ class EstimatorAgentApp(tk.Tk):
         self.status_badge.grid(row=1, column=0, sticky="w")
         ttk.Label(card, textvariable=self.elapsed_var, style="Muted.TLabel").grid(row=1, column=1, sticky="e")
         ttk.Label(card, textvariable=self.progress_var, style="Body.TLabel", wraplength=520).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Label(card, textvariable=self.output_location_var, style="Muted.TLabel", wraplength=520).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(card, textvariable=self.validation_location_var, style="Muted.TLabel", wraplength=520).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         return card
 
     def _build_log_section(self, parent: ttk.Frame) -> ttk.Frame:
@@ -255,9 +267,16 @@ class EstimatorAgentApp(tk.Tk):
             button = ttk.Button(card, text=label, command=lambda f=filename: self.open_output_file(f))
             button.grid(row=index, column=0, sticky="ew", pady=2)
             self.output_buttons[label] = button
+            if filename is None:
+                self.output_folder_button = button
+            else:
+                self.output_file_buttons[filename] = button
+
+        refresh_button = ttk.Button(card, text="Refresh Output Files", command=self.manual_refresh_output_files)
+        refresh_button.grid(row=len(actions) + 1, column=0, sticky="ew", pady=(8, 2))
 
         status_frame = ttk.Frame(card, style="Card.TFrame")
-        status_frame.grid(row=len(actions) + 1, column=0, sticky="ew", pady=(10, 0))
+        status_frame.grid(row=len(actions) + 2, column=0, sticky="ew", pady=(10, 0))
         status_frame.columnconfigure(1, weight=1)
         for row, filename in enumerate(REQUIRED_OUTPUTS):
             ttk.Label(status_frame, text=filename, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=1)
@@ -272,7 +291,8 @@ class EstimatorAgentApp(tk.Tk):
         ttk.Label(card, text="Answer key CSV", style="Body.TLabel").grid(row=1, column=0, sticky="w", pady=4)
         ttk.Entry(card, textvariable=self.answer_key_var).grid(row=1, column=1, sticky="ew", padx=(10, 6))
         ttk.Button(card, text="Browse", command=self.browse_answer_key).grid(row=1, column=2)
-        ttk.Button(card, text="Run Validation", command=self.run_validation).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 2))
+        self.run_validation_button = ttk.Button(card, text="Run Validation", command=self.run_validation)
+        self.run_validation_button.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 2))
         open_folder = ttk.Button(card, text="Open Validation Folder", command=lambda: self.open_validation_file(None))
         open_summary = ttk.Button(card, text="Open Validation Summary", command=lambda: self.open_validation_file("SYMBOL_DETECTION_VALIDATION.md"))
         open_folder.grid(row=3, column=0, columnspan=3, sticky="ew", pady=2)
@@ -305,19 +325,21 @@ class EstimatorAgentApp(tk.Tk):
         path = filedialog.askdirectory(title="Select output folder")
         if path:
             self.output_var.set(path)
-            self.refresh_output_status()
+            self.refresh_output_status(log_changes=True)
 
     def browse_answer_key(self) -> None:
         path = filedialog.askopenfilename(title="Select validation answer key CSV", filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if path:
             self.answer_key_var.set(path)
+            self.refresh_output_status()
 
     def _default_output_from_input(self, path: Path) -> None:
-        if not self.output_var.get().strip():
-            self.output_var.set(str(ROOT / "outputs" / "estimator-package" / safe_name(path.name)))
+        self.output_var.set(str(ROOT / "outputs" / "estimator-package" / safe_name(path.name)))
         if not self.project_name_var.get().strip():
             self.project_name_var.set(path.stem if path.is_file() else path.name)
-        self.refresh_output_status()
+        self.log(f"Selected input: {path}")
+        self.log(f"Selected output: {Path(self.output_var.get()).resolve()}")
+        self.refresh_output_status(log_changes=True)
 
     def set_status(self, status: str, message: str) -> None:
         self.status_var.set(status)
@@ -349,6 +371,11 @@ class EstimatorAgentApp(tk.Tk):
         if not str(out_dir):
             messagebox.showwarning(APP_TITLE, "Choose an output folder first.")
             return
+        out_dir = out_dir.resolve()
+        self.output_var.set(str(out_dir))
+        self.log(f"Selected input: {input_path.resolve()}")
+        self.log(f"Selected output: {out_dir}")
+        self.log("Running estimate-project...")
         cmd = [
             sys.executable,
             str(CLI),
@@ -375,6 +402,8 @@ class EstimatorAgentApp(tk.Tk):
             return
         if not self._require_path(answer_key, "Choose an answer key CSV first."):
             return
+        self.log(f"Selected answer key: {answer_key.resolve()}")
+        self.log(f"Validation output: {(out_dir / 'validation').resolve()}")
         cmd = [
             sys.executable,
             str(CLI),
@@ -394,6 +423,10 @@ class EstimatorAgentApp(tk.Tk):
         self.input_var.set(str(demo_project))
         self.output_var.set(str(demo_output))
         self.project_name_var.set("safe-multi-scope-demo")
+        self.output_location_var.set(f"Output folder: {demo_output.resolve()}")
+        self.log(f"Selected input: {demo_project.resolve()}")
+        self.log(f"Selected output: {demo_output.resolve()}")
+        self.log("Running safe demo...")
         commands = [
             [sys.executable, str(CREATE_DEMO), "--out-dir", str(demo_project), "--seed", "1"],
             [sys.executable, str(CLI), "estimate-project", "--project-folder", str(demo_project), "--out-dir", str(demo_output)],
@@ -410,6 +443,9 @@ class EstimatorAgentApp(tk.Tk):
             return
         cmd = [sys.executable, str(CHECK_OUTPUTS), "--out-dir", str(out_dir)]
         self._run_command(cmd, "Checking current output package...", on_done=lambda code: self._after_check(code))
+
+    def manual_refresh_output_files(self) -> None:
+        self.refresh_output_status(log_changes=True)
 
     def open_demo_checklist(self) -> None:
         if DEMO_CHECKLIST.exists():
@@ -431,6 +467,7 @@ class EstimatorAgentApp(tk.Tk):
         try:
             open_path(path)
         except Exception as exc:
+            self.refresh_output_status(log_changes=True)
             messagebox.showwarning(APP_TITLE, f"Could not open:\n{path}\n\n{exc}")
 
     def _require_path(self, path: Path, message: str) -> bool:
@@ -447,9 +484,22 @@ class EstimatorAgentApp(tk.Tk):
             messagebox.showinfo(APP_TITLE, "A command is already running.")
             return
         self.clear_log()
+        input_text = self.input_var.get().strip()
+        output_text = self.output_var.get().strip()
+        if input_text:
+            self.log(f"Selected input: {Path(input_text).resolve()}")
+        if output_text:
+            self.log(f"Selected output: {Path(output_text).resolve()}")
+        if "safe demo" in message.lower():
+            self.log("Running safe demo...")
+        elif "estimate-project" in message.lower():
+            self.log("Running estimate-project...")
+        elif "validation" in message.lower():
+            self.log("Running validation...")
         self.command_running = True
         self.started_at = time.time()
         self.set_status("Running", message)
+        self.output_location_var.set(f"Output folder: {Path(self.output_var.get()).resolve() if self.output_var.get().strip() else 'not selected yet'}")
         self._set_buttons_enabled(False)
 
         def worker() -> None:
@@ -494,7 +544,7 @@ class EstimatorAgentApp(tk.Tk):
                         callback(code)
                     else:
                         self.set_status("Completed" if code == 0 else "Failed", "Command completed." if code == 0 else "Command failed.")
-                    self.refresh_output_status()
+                        self.refresh_output_status()
         except queue.Empty:
             pass
         self.after(100, self._process_log_queue)
@@ -506,25 +556,34 @@ class EstimatorAgentApp(tk.Tk):
         self.after(500, self._tick_elapsed)
 
     def _after_estimate(self, code: int) -> None:
+        out_dir = Path(self.output_var.get().strip()).resolve()
         if code == 0:
-            self.set_status("Completed", "Estimate package created. Review the dashboard, takeoff CSV, and marked drawings.")
+            self.log(f"Estimator package created at: {out_dir}")
+            self.set_status("Completed", "Completed - estimator package created.")
+            self.refresh_output_status(log_changes=True)
+            self.output_location_var.set(f"Estimator package created:\n{out_dir}")
         else:
-            self.set_status("Failed", "Estimate command failed. Check the log for the exact error.")
-        self.refresh_output_status()
+            self.set_status("Failed", "Failed - check log output.")
+            self.output_location_var.set(f"Output folder: {out_dir}")
+            self.refresh_output_status(log_changes=True)
 
     def _after_validation(self, code: int) -> None:
+        validation_dir = (Path(self.output_var.get().strip()) / "validation").resolve()
         if code == 0:
             self.set_status("Completed", "Validation finished. Open the validation summary to review matches and differences.")
+            self.validation_location_var.set(f"Validation output:\n{validation_dir}")
+            self.log(f"Validation results created at: {validation_dir}")
         else:
             self.set_status("Failed", "Validation failed. Check that the answer key CSV has usable reviewed quantities.")
-        self.refresh_output_status()
+            self.validation_location_var.set(f"Validation output: {validation_dir}")
+        self.refresh_output_status(log_changes=True)
 
     def _after_check(self, code: int) -> None:
         if code == 0:
             self.set_status("Completed", "Output package health check passed.")
         else:
             self.set_status("Failed", "Output package health check found an issue. Check the log.")
-        self.refresh_output_status()
+        self.refresh_output_status(log_changes=True)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -538,25 +597,66 @@ class EstimatorAgentApp(tk.Tk):
         for child in widget.winfo_children():
             self._set_button_tree_state(child, state)
 
-    def refresh_output_status(self) -> None:
+    def refresh_output_status(self, *, log_changes: bool = False) -> None:
         output_text = self.output_var.get().strip()
         out_dir = Path(output_text) if output_text else Path("__no_output_selected__")
+        if output_text:
+            out_dir = out_dir.resolve()
+            self.output_location_var.set(f"Output folder: {out_dir}")
         package_exists = bool(output_text) and out_dir.exists() and out_dir.is_dir()
-        button_state = "normal" if package_exists and not self.command_running else "disabled"
-        for button in self.output_buttons.values():
-            button.configure(state=button_state)
+        folder_state = "normal" if package_exists and not self.command_running else "disabled"
+        if self.output_folder_button is not None:
+            self.output_folder_button.configure(state=folder_state)
         for button in self.validation_buttons:
             button.configure(state=("normal" if (out_dir / "validation").exists() and not self.command_running else "disabled"))
 
+        found_files: list[str] = []
+        missing_files: list[str] = []
         for filename, label in self.output_status_labels.items():
             path = out_dir / filename if package_exists else Path()
             if path.exists() and path.is_file():
                 status = "Created"
-                if filename == "marked_up_drawings.pdf" and path.stat().st_size < 1500:
+                if filename == "marked_up_drawings.pdf" and self._marked_pdf_has_warning(path):
                     status = "Warning: possible placeholder"
                 label.configure(text=status, foreground="#1f6b3a" if status == "Created" else "#9b5b00")
+                found_files.append(filename)
+                if filename in self.output_file_buttons:
+                    self.output_file_buttons[filename].configure(state=("normal" if not self.command_running else "disabled"))
             else:
                 label.configure(text="Missing", foreground="#9b2f1f")
+                missing_files.append(filename)
+                if filename in self.output_file_buttons:
+                    self.output_file_buttons[filename].configure(state="disabled")
+
+        detections_exists = package_exists and (out_dir / "takeoff_items.csv").is_file()
+        answer_key_exists = bool(self.answer_key_var.get().strip()) and Path(self.answer_key_var.get().strip()).is_file()
+        if self.run_validation_button is not None:
+            self.run_validation_button.configure(
+                state=("normal" if detections_exists and answer_key_exists and not self.command_running else "disabled")
+            )
+
+        if log_changes:
+            if package_exists:
+                self.log(f"Output folder: {out_dir}")
+                for filename in found_files:
+                    self.log(f"Found {filename}")
+                for filename in missing_files:
+                    self.log(f"Missing {filename}")
+                self.log("Output buttons refreshed.")
+            else:
+                self.log(f"Output folder does not exist yet: {out_dir if output_text else 'not selected'}")
+
+    def _marked_pdf_has_warning(self, path: Path) -> bool:
+        if path.stat().st_size < 1500:
+            return True
+        if PdfReader is None:
+            return False
+        try:
+            reader = PdfReader(str(path))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages[:1])
+        except Exception:
+            return False
+        return "No marked-up drawings generated" in text or "skipped: no rendered sheets" in text
 
 
 def main() -> None:
